@@ -1,0 +1,51 @@
+[project]
+name = "mcbp-mcp-server"
+version = "0.1.0"
+description = "Standalone MCP server exposing BAS MCBP_AI (/ai/v1) to MCP clients"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "MCBP.PLUS" }]
+keywords = ["mcp", "bas", "1c", "erp", "mcbp"]
+dependencies = [
+    "mcp>=2.0",
+    # Pinned to a compatible range: an unbounded `mcbp-core` would resolve from PyPI, and the
+    # name was unclaimed — publish mcbp-core first, then this constraint is what keeps the pair
+    # in step. `tool.uv.sources` below only redirects the LOCAL checkout; it is not part of the
+    # published wheel's metadata.
+    "mcbp-core>=0.1,<0.2",
+    "anyio>=4.0",
+]
+
+[project.urls]
+Homepage = "https://mcbp.plus"
+Repository = "https://github.com/kzavrazhnyi/mcbp-mcp-server"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[project.scripts]
+mcbp-mcp-server = "mcbp_mcp_server.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcbp_mcp_server"]
+
+[tool.uv.sources]
+mcbp-core = { path = "../mcbp-core", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

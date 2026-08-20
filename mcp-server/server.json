@@ -1,0 +1,77 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.kzavrazhnyi/mcbp-ai",
+  "title": "BAS / 1C (MCBP+)",
+  "description": "Read BAS/1C catalogs, documents, registers and metadata. Read-only by default.",
+  "repository": {
+    "url": "https://github.com/kzavrazhnyi/mcbp-mcp-server",
+    "source": "github"
+  },
+  "websiteUrl": "https://mcbp.plus",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcbp-mcp-server",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ONEC_BASE_URL",
+          "description": "Base URL of the BAS publication, up to the service name: http(s)://<host>/<base>/hs/mcbp_ai (without the /ai/v1 suffix — the client appends it)",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "ONEC_USER",
+          "description": "HTTP Basic user of the BAS publication",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "ONEC_PASSWORD",
+          "description": "Password of the BAS user. May be an empty string (some demo bases have no password), but the variable itself must be set",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "ONEC_TIMEOUT",
+          "description": "HTTP request timeout in seconds",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "number",
+          "default": "30"
+        },
+        {
+          "name": "ONEC_POOL_MAX",
+          "description": "Maximum number of pooled HTTP connections",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "number",
+          "default": "10"
+        },
+        {
+          "name": "ONEC_VERIFY_SSL",
+          "description": "Verify the TLS certificate; set to 0 for self-signed intranet publications",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string",
+          "default": "1"
+        },
+        {
+          "name": "MCP_ALLOW_WRITE",
+          "description": "Set to 1 to also register the three write tools (write_object, patch_object, save_context). Off by default — the server is read-only unless this is enabled",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string",
+          "default": "0"
+        }
+      ]
+    }
+  ]
+}
