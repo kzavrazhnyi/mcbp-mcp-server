@@ -2,11 +2,16 @@
 
 # mcbp-ai — MCP server for BAS / 1C (MCBP+)
 
-Read your BAS (1C) database directly from Claude Desktop, Claude Code, or any MCP client.
-Catalogs, documents, register balances and records, and the full configuration metadata tree —
-exposed as MCP tools over the `MCBP_AI` HTTP service.
+Read your BAS (1C) database from any MCP client. Catalogs, documents, register balances and records,
+and the full configuration metadata tree — exposed as MCP tools over the `MCBP_AI` HTTP service.
 
 **Read-only by default.** None of the tools available out of the box modifies your data.
+
+**Model-agnostic.** MCP is a vendor-neutral standard, so this server works with **Claude Desktop /
+Code, ChatGPT desktop, Gemini, Microsoft and GitHub Copilot, Cursor, Windsurf, VS Code and Zed** —
+it serves `tools/list` and executes `tools/call` without knowing which model is asking. The
+transport is **stdio**, so the client launches the process locally; browser-based clients would
+need a remote HTTP server, which this one does not expose.
 
 > ### ⚠ This server needs a server-side component that is not in this repository
 >
