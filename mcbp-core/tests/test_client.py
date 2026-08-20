@@ -102,7 +102,7 @@ async def test_plus_required_envelope_typed():
 
 @respx.mock
 async def test_non_envelope_body_falls_back_to_status_code_classification():
-    # 500 з plain-text (не JSON-конверт {"error":...}) - стара поведінка збережена: UpstreamError.
+    # 500 with plain text (not the {"error":...} JSON envelope) - old behavior preserved: UpstreamError.
     respx.get("http://test/ai/v1/catalogs/X").mock(
         return_value=httpx.Response(500, text="Internal Server Error, not JSON")
     )

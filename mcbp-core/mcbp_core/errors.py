@@ -1,7 +1,9 @@
-"""Типізовані помилки взаємодії з BAS MCBP_AI.
+"""Typed errors for interacting with BAS MCBP_AI.
 
-Кожен підклас має машинний `code` і `http_status`; обробник у `main.py`
-перетворює їх на відповідь `{ "error": {"code","message"} }` з потрібним кодом.
+Each subclass carries a machine-readable `code` and `http_status`, so a host application can map
+them onto its own surface: an HTTP service turns them into a `{"error": {"code","message"}}`
+response with the right status, while the MCP server turns the fatal ones into `MCPError` and lets
+the rest reach the model as tool errors it can correct.
 """
 
 from __future__ import annotations
@@ -36,57 +38,61 @@ class ParameterError(MCBPError):
 
 
 class KeyMismatchError(MCBPError):
-    """Внутрішній «ключ» бази не збігся (legacy `Key not found!`)."""
+    """The base's internal "key" did not match (legacy `Key not found!`)."""
 
     code = "KEY_MISMATCH"
     http_status = 502
 
 
 class PlusRequiredError(MCBPError):
-    """Метод потребує зовнішнього розширення «MCBP Plus» (legacy `MCBP Plus not found!`)."""
+    """The method requires the external "MCBP Plus" extension (legacy `MCBP Plus not found!`)."""
 
     code = "PLUS_REQUIRED"
     http_status = 501
 
 
 class AuthError(MCBPError):
-    """BAS відхилила облікові дані (Basic Auth 401/403 від upstream)."""
+    """BAS rejected the credentials (Basic Auth 401/403 from upstream)."""
 
     code = "AUTH_FAILED"
     http_status = 401
 
 
 class NotConnectedError(MCBPError):
-    """Немає активного сеансу підключення до BAS — потрібен POST /api/v1/session/login."""
+    """No active connection to BAS — the host application must connect before issuing requests
+    (`MCBPClient.startup()`, or whatever login step that host exposes)."""
 
     code = "NOT_CONNECTED"
     http_status = 409
 
 
 class WriteFailedError(MCBPError):
-    """Запис через MCBP Plus прийнято, але Plus повернув помилку конвертації (`WRITE_FAILED`)."""
+    """A write through MCBP Plus was accepted, but Plus returned a conversion error
+    (`WRITE_FAILED`)."""
 
     code = "WRITE_FAILED"
     http_status = 422
 
 
 class ConversionNotConfiguredError(MCBPError):
-    """Plus є, але для цього типу немає налаштованого правила конвертації в
-    `InformationRegister.MCBP_DataConversion` — жодного об'єкта не записано."""
+    """Plus is present, but this type has no configured conversion rule in
+    `InformationRegister.MCBP_DataConversion` — no object was written."""
 
     code = "CONVERSION_NOT_CONFIGURED"
     http_status = 422
 
 
 class ConversionChangedError(MCBPError):
-    """Правила конвертації Plus змінились під час запису — Plus відмовив і назвав очікувані поля."""
+    """Plus's conversion rules changed while writing — Plus refused and named the expected
+    fields."""
 
     code = "CONVERSION_CHANGED"
     http_status = 409
 
 
 class NotConfiguredError(MCBPError):
-    """Базова конфігурація неповна для операції (напр. немає предвизначеної інфобази обміну "AI")."""
+    """The base's configuration is incomplete for the operation (e.g. the predefined "AI"
+    exchange infobase is missing)."""
 
     code = "NOT_CONFIGURED"
     http_status = 422

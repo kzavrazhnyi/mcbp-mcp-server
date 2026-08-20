@@ -2,7 +2,7 @@
 
 Two jobs:
   1. Talk to /ai/v1/* over httpx with a connection pool (1C reuses sessions for
-     ~20s, so a persistent pool matters). Auth = HTTP Basic (як публікується сервіс).
+     ~20s, so a persistent pool matters). Auth = HTTP Basic (that's how the service is published).
   2. Normalise responses. The NEW MCBP_AI service returns real HTTP codes, but we
      still defensively detect the legacy "success:false + string in data/answer"
      shape (MCBP_Exchange) and raise typed MCBPError subclasses.
@@ -121,9 +121,10 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _kw_brief(kw: dict) -> str:
-    """Опис параметрів запиту для лога. Тіла запитів до MCBP_AI малі й не містять секретів,
-    тож для dict-тіла логується сам JSON (обрізаний), а не лише ключі — значення часто
-    і є причиною відмови (напр. складене посилальне поле без "ІмяТипу:")."""
+    """Describes a request's parameters for the log. Request bodies to MCBP_AI are small and
+    carry no secrets, so a dict body is logged as the actual JSON (truncated), not just its
+    keys — the value itself is often the reason for a rejection (e.g. a composite reference
+    field missing "TypeName:")."""
     parts = []
     if kw.get("params"):
         parts.append(f"params={kw['params']}")
@@ -395,7 +396,7 @@ class MCBPClient:
             params["from"] = frm
         # An omitted `to` used to be read upstream as "the single day `from`", so "everything
         # since 2000" answered 0 rows with no error. Fixed in BSL (open upper bound), but sent
-        # explicitly here too: the fix only reaches a base after a manual Конфігуратор transfer,
+        # explicitly here too: the fix only reaches a base after a manual Configurator transfer,
         # and an explicit bound behaves identically on both versions.
         params["to"] = to if to else "3999-12-31"
         if cursor:
@@ -541,9 +542,10 @@ class MCBPClient:
 
 
 # --- Mock data so the backend boots and the AI loop is testable without BAS ---
-# Форма навмисно повторює реальний зріз demo-бази basmbdemo (українська типова):
-# кириличні типи (Контрагенты / ЗаказПокупателя), латинізовані ключі полів,
-# посилання як {Presentation, Data, Metadata}, курсор = UUID останнього запису.
+# Fixtures deliberately mirror a real BAS response slice: Cyrillic type names
+# (Контрагенты / ЗаказПокупателя), canonical English field keys, references as
+# {Presentation, Data, Metadata}, cursor = UUID of the last row. Do NOT "simplify"
+# these shapes — a convenient fixture makes the suite green and the live base fail.
 def _mock_extra_fields(kw: dict) -> dict:
     """Echo the requested `fields` back into a mock row, so callers/tests can see they were sent."""
     fields = (kw.get("params") or {}).get("fields")
@@ -614,8 +616,8 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
             row.update(_mock_extra_fields(kw))
         return {"data": rows, "cursor": None}
     if "/documents/" in path and path.endswith("/schema"):
-        # /schema тепер віддає рівно ту саму форму, що й ai_metadata_get деталь
-        # (MCBP_AI.MetadataDetail) — без окремого поля "fields".
+        # /schema now returns exactly the same shape as the ai_metadata_get detail
+        # (MCBP_AI.MetadataDetail) — no separate "fields" key.
         return {
             "metadata": "document",
             "type": path.split("/")[-2],
@@ -673,7 +675,7 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
     return {"data": None}
 
 
-# Mock для інтроспекції структури — форма повторює реальний ai_metadata_get.
+# Mock for structure introspection — the shape mirrors the real ai_metadata_get.
 def _mock_metadata(path: str) -> Any:
     tail = path.split("/metadata/", 1)[1]
     parts = [p for p in tail.split("/") if p]

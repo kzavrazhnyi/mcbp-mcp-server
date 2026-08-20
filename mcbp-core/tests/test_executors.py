@@ -1,6 +1,6 @@
-"""Recording-fake клієнта: фіксує **kwargs** кожного виклику, щоб довести, що executor-и
-`mcbp_core.tools` передають аргументи ІМЕНОВАНО (а не позиційно — зсув при перестановці
-параметрів клієнта інакше пройшов би непомітно, див. план R3)."""
+"""Recording fake of the client: captures **kwargs** of every call, to prove that the
+`mcbp_core.tools` executors pass arguments BY NAME (not positionally — otherwise a reordering
+of the client's parameters would slip through unnoticed, see plan R3)."""
 from __future__ import annotations
 
 from typing import Any
@@ -11,8 +11,8 @@ from mcbp_core.tools import TOOLS
 
 
 class RecordingClient:
-    """Фальшивий MCBPClient — сигнатури методів як у mcbp_core.client.MCBPClient,
-    кожен виклик записує (ім'я_методу, kwargs) і повертає фіксований результат."""
+    """A fake MCBPClient — method signatures match mcbp_core.client.MCBPClient; every call
+    records (method_name, kwargs) and returns a fixed result."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []

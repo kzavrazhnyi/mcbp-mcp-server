@@ -126,9 +126,10 @@ async def _patch_object(c: MCBPClient, a: dict) -> Any:
 
 
 # --- Registry ---
-# ПОРЯДОК ВАЖЛИВИЙ: MockProvider викликає TOOLS[0], тож search_catalog лишається першим.
-# Інструменти інтроспекції додані в кінець; пріоритет «спершу структура» задано в SYSTEM_PROMPT.
-# health/write_object/save_context додані В КІНЕЦЬ (етап 5) — щоб не зрушити TOOLS[0].
+# ORDER MATTERS: MockProvider calls TOOLS[0], so search_catalog must stay first.
+# Introspection tools were appended at the end; the "structure first" priority is set in
+# SYSTEM_PROMPT instead. health/write_object/save_context were appended at the END too (stage 5)
+# — so as not to shift TOOLS[0].
 TOOLS: dict[str, ToolSpec] = {
     "search_catalog": ToolSpec(
         "search_catalog",
