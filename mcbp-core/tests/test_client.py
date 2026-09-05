@@ -54,6 +54,36 @@ async def test_patch_object_sends_patch_method_with_json_body():
 
 
 @respx.mock
+async def test_register_balance_sends_on_alongside_dimension_filters():
+    route = respx.get(url__startswith="http://test/ai/v1/registers/MCBP_Debt/balance").mock(
+        return_value=httpx.Response(200, json={"type": "MCBP_Debt", "data": []})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.register_balance("MCBP_Debt", {"Контрагент": "uuid-1"}, on="2026-01-01")
+        params = route.calls[0].request.url.params
+        assert params["on"] == "2026-01-01"
+        assert params["Контрагент"] == "uuid-1"
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_register_balance_omits_on_when_not_given():
+    route = respx.get(url__startswith="http://test/ai/v1/registers/MCBP_Debt/balance").mock(
+        return_value=httpx.Response(200, json={"type": "MCBP_Debt", "data": []})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.register_balance("MCBP_Debt", {"Контрагент": "uuid-1"})
+        assert "on" not in route.calls[0].request.url.params
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
 async def test_bad_parameter_envelope_typed_as_parameter_error():
     respx.patch(url__startswith="http://test/ai/v1/object/").mock(
         return_value=httpx.Response(422, json={

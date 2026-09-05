@@ -62,12 +62,12 @@ async def _get_schema(c: MCBPClient, a: dict) -> Any:
 
 
 async def _register_balance(c: MCBPClient, a: dict) -> Any:
-    # Accept dimensions either nested under "filters" or as top-level keys (besides "type").
+    # Accept dimensions either nested under "filters" or as top-level keys (besides "type"/"on").
     filters = dict(a.get("filters") or {})
     for k, v in a.items():
-        if k not in ("type", "filters"):
+        if k not in ("type", "filters", "on"):
             filters[k] = v
-    return await c.register_balance(type_=a["type"], filters=filters)
+    return await c.register_balance(type_=a["type"], filters=filters, on=a.get("on"))
 
 
 async def _register_records(c: MCBPClient, a: dict) -> Any:
@@ -272,7 +272,11 @@ TOOLS: dict[str, ToolSpec] = {
         _params(
             {"type": {"type": "string", "description": "Ім'я регістру накопичення (з list_metadata)"},
              "filters": {"type": "object",
-                         "description": "{ім'я_виміру: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}"}},
+                         "description": "{ім'я_виміру: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}"},
+             "on": {"type": "string",
+                    "description": "Дата, СТАНОМ НА яку рахувати залишок, YYYY-MM-DD. Без неї — "
+                                   "поточний залишок. Це НЕ фільтр за виміром: сюди йде лише дата "
+                                   "(напр. «борг на 01.01.2026» → on=\"2026-01-01\")"}},
             ["type"],
         ),
         _register_balance,

@@ -438,8 +438,13 @@ class MCBPClient:
             "POST", f"/ai/v1/objects/{type_}", params=params or None, json=body,
         )
 
-    async def register_balance(self, type_: str, filters: dict) -> dict:
-        return await self._request("GET", f"/ai/v1/registers/{type_}/balance", params=filters)
+    async def register_balance(self, type_: str, filters: dict, on: str | None = None) -> dict:
+        """Accumulation-register balance. Every query param is a dimension filter EXCEPT `on`
+        (YYYY-MM-DD), which is the date to compute the balance at — omitted means current."""
+        params = dict(filters)
+        if on:
+            params["on"] = on
+        return await self._request("GET", f"/ai/v1/registers/{type_}/balance", params=params)
 
     async def register_records(self, type_: str, date_from: str | None = None,
                                date_to: str | None = None, filters: dict | None = None,

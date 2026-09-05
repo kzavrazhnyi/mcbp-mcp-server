@@ -34,8 +34,8 @@ class RecordingClient:
     async def document_schema(self, type_):
         return self._record("document_schema", type_=type_)
 
-    async def register_balance(self, type_, filters):
-        return self._record("register_balance", type_=type_, filters=filters)
+    async def register_balance(self, type_, filters, on=None):
+        return self._record("register_balance", type_=type_, filters=filters, on=on)
 
     async def filter_catalog(self, type_, filters, orderby, desc, exclude_groups, limit,
                               cursor=None, fields=None, agg=None, groupby=None):
@@ -117,6 +117,18 @@ async def test_register_balance_merges_top_level_keys_into_filters(client):
     assert method == "register_balance"
     assert kw["type_"] == "MCBP_Debt"
     assert kw["filters"] == {"Организация": "uuid-2", "Контрагент": "uuid-1"}
+    assert kw["on"] is None
+
+
+async def test_register_balance_passes_on_separately(client):
+    # `on` is the balance date, not a dimension — it must NOT end up among the filters.
+    await TOOLS["get_register_balance"].executor(
+        client, {"type": "MCBP_Debt", "on": "2026-01-01", "filters": {"Контрагент": "uuid-1"}}
+    )
+    method, kw = client.calls[0]
+    assert method == "register_balance"
+    assert kw["on"] == "2026-01-01"
+    assert kw["filters"] == {"Контрагент": "uuid-1"}
 
 
 async def test_filter_catalog_defaults(client):
