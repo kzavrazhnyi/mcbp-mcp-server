@@ -26,6 +26,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from mcbp_mcp_server import __version__
+from mcbp_mcp_server.credentials import ClientPool
 from mcbp_mcp_server.registry import make_on_call_tool, make_on_list_tools
 
 log = logging.getLogger("mcbp_mcp_server")
@@ -120,8 +121,14 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
 
 @dataclass
 class AppContext:
+    """`client` is the process identity from the `ONEC_*` env block — the only identity on stdio,
+    and the fallback for an HTTP request that presents no `Authorization` header. `pool` holds the
+    per-caller clients built from such a header; it stays empty on stdio, which has no headers at
+    all, so nothing there can ever populate it."""
+
     client: MCBPClient
     allow_write: bool
+    pool: ClientPool | None = None
 
 
 async def _probe_health(client: MCBPClient) -> None:
@@ -155,10 +162,12 @@ async def lifespan(server: Server[AppContext]) -> AsyncIterator[AppContext]:
         verify=settings.verify_ssl,
     ))
     await client.startup()
+    pool = ClientPool(settings)
     try:
         await _probe_health(client)
-        yield AppContext(client=client, allow_write=settings.allow_write)
+        yield AppContext(client=client, allow_write=settings.allow_write, pool=pool)
     finally:
+        await pool.aclose()
         await client.shutdown()
 
 

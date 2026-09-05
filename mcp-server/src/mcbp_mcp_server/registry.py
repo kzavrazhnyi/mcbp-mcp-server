@@ -18,6 +18,7 @@ from mcbp_core.tools import ToolSpec, tool_specs
 from mcp import types
 from mcp.server.context import ServerRequestContext
 
+from mcbp_mcp_server.credentials import client_for
 from mcbp_mcp_server.errors import is_fatal, to_mcp_error, to_tool_error
 
 if TYPE_CHECKING:
@@ -78,10 +79,13 @@ def make_on_call_tool(allow_write: bool) -> _OnCallTool:
                 is_error=True,
                 content=[types.TextContent(type="text", text=f"Unknown tool: {params.name}")],
             )
-        client = ctx.lifespan_context.client
         arguments = params.arguments or {}
         try:
-            result = await spec.executor(client, arguments)
+            # The client is chosen per REQUEST, not per process: an HTTP caller presenting its
+            # own BAS account runs as that account (see `credentials.py`), stdio always runs as
+            # the env identity.
+            async with client_for(ctx.lifespan_context) as client:
+                result = await spec.executor(client, arguments)
         except MCBPError as exc:
             if is_fatal(exc):
                 raise to_mcp_error(exc) from exc

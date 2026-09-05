@@ -27,11 +27,18 @@ from dataclasses import dataclass, field
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
+from starlette.datastructures import Headers
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
+from mcbp_mcp_server.credentials import (
+    CredentialsError,
+    parse_authorization,
+    reset_request_credentials,
+    set_request_credentials,
+)
 from mcbp_mcp_server.server import (
     Settings,
     SettingsError,
@@ -96,13 +103,35 @@ def _security(settings: HttpSettings) -> TransportSecuritySettings | None:
 class _ManagerEndpoint:
     """Raw ASGI adapter so `Route` treats this as an ASGI app rather than a `func(request)`
     endpoint — Starlette makes that decision with `inspect.isfunction/ismethod`, and
-    `manager.handle_request` is a bound method, which would be misread as the latter."""
+    `manager.handle_request` is a bound method, which would be misread as the latter.
+
+    It is also where the caller's BAS credentials are picked up. This has to happen HERE: the
+    SDK hands `on_call_tool` a `ServerRequestContext`, which carries no transport metadata at
+    all, and the manager attaches `TransportContext.headers` only on the modern protocol path.
+    Our own ASGI layer sees the headers whatever the protocol version — see `credentials.py`
+    for the propagation evidence."""
 
     def __init__(self, manager: StreamableHTTPSessionManager) -> None:
         self._manager = manager
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        await self._manager.handle_request(scope, receive, send)
+        raw = Headers(scope=scope).get("authorization")
+        try:
+            creds = parse_authorization(raw) if raw is not None else None
+        except CredentialsError as e:
+            # 400, deliberately NOT 401: MCP clients read a 401 as "begin OAuth discovery" and
+            # would chase an authorization server that does not exist instead of showing the
+            # reason. Falling through to the env account is not an option either — that is the
+            # silent-service-account failure this whole feature exists to remove.
+            log.warning("rejected request with an unusable Authorization header: %s", e)
+            await JSONResponse({"error": {"code": "BAD_AUTHORIZATION", "message": str(e)}},
+                               status_code=400)(scope, receive, send)
+            return
+        token = set_request_credentials(creds)
+        try:
+            await self._manager.handle_request(scope, receive, send)
+        finally:
+            reset_request_credentials(token)
 
 
 async def _healthz(request: Request) -> PlainTextResponse:
