@@ -1,0 +1,37 @@
+# /etc/systemd/system/mcbp-mcp@.service
+# Long-lived HTTP process — unlike the stdio entry point, which dies on EOF when its client
+# leaves and must never be given a unit of its own.
+#
+# Templated on purpose: one BAS base per process. The server reads ONEC_* once per process
+# (load_settings) and builds one MCBPClient, so every HTTP session of an instance shares one
+# base — multi-base support is a count of processes, not code.
+#
+#   systemctl enable --now mcbp-mcp@prod mcbp-mcp@demo
+#
+# Two properties make this single file serve any number of bases:
+#   * EnvironmentFile=/etc/mcbp-mcp/%i.env — the instance name is the ONLY thing that differs;
+#     base URL, credentials, port and write flag all live in that file.
+#   * ProtectSystem=strict — the process cannot write anywhere on the filesystem, so instances
+#     cannot leave state behind that another instance would pick up. Nothing is per-instance
+#     except the env file, which is why one unit is enough.
+[Unit]
+Description=mcbp-ai MCP server (Streamable HTTP) — base %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=mcbp
+Group=mcbp
+WorkingDirectory=/opt/mcbp-mcp
+EnvironmentFile=/etc/mcbp-mcp/%i.env
+ExecStart=/opt/mcbp-mcp/.venv/bin/mcbp-http
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
