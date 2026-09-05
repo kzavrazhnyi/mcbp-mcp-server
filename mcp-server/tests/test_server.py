@@ -4,11 +4,13 @@ create_server() not touching the network. Tool registration is Phase 4 — nothi
 from __future__ import annotations
 
 import logging
+from importlib.metadata import PackageNotFoundError, version as distribution_version
 
 import pytest
 
 from mcp.server import Server
 
+from mcbp_mcp_server import __version__
 from mcbp_mcp_server.server import (
     AppContext,
     Settings,
@@ -149,6 +151,25 @@ def test_create_server_does_not_touch_network(monkeypatch):
     monkeypatch.delenv("ONEC_PASSWORD", raising=False)
     server = create_server()
     assert server is not None
+
+
+def test_create_server_advertises_a_non_empty_version():
+    # `Server(...)` defaults `version` to "" — omitting it made `initialize` answer with an empty
+    # server version, which is what MCP clients show in their connected-servers UI. Only a live
+    # stdio run against the installed artifact caught it; this pins it at unit level.
+    options = create_server().create_initialization_options()
+    assert options.server_version == __version__
+    assert options.server_version
+
+
+def test_package_version_matches_installed_distribution_metadata():
+    # `__version__` must track `pyproject.toml` through installed metadata, not a hand-copied
+    # literal. If the package is not installed at all, the fallback is used and this is skipped.
+    try:
+        expected = distribution_version("mcbp")
+    except PackageNotFoundError:
+        pytest.skip("mcbp distribution is not installed in this environment")
+    assert __version__ == expected
 
 
 def test_create_server_returns_low_level_server():

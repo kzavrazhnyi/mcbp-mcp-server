@@ -12,7 +12,7 @@
   "packages": [
     {
       "registryType": "pypi",
-      "identifier": "mcbp-mcp-server",
+      "identifier": "mcbp",
       "version": "0.1.0",
       "transport": {
         "type": "stdio"

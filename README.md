@@ -34,7 +34,7 @@ The MCBP+ configuration and the `MCBP_AI` service module are proprietary works o
 
 | Directory | PyPI package | What it is |
 |---|---|---|
-| [`mcp-server/`](mcp-server) | `mcbp-mcp-server` | The MCP server: stdio transport, tool registration, error mapping |
+| [`mcp-server/`](mcp-server) | `mcbp` | The MCP server: stdio transport, tool registration, error mapping |
 | [`mcbp-core/`](mcbp-core) | `mcbp-core` | The shared engine: async HTTP client, typed errors, tool registry |
 
 They are split because `mcbp-core` is also consumed by a separate FastAPI web chat. Everything that
@@ -45,7 +45,7 @@ front-ends registering from one registry cannot drift apart.
 ## Quick start
 
 ```bash
-pip install mcbp-mcp-server
+pip install mcbp
 ```
 
 Claude Desktop — `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or

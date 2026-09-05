@@ -1,0 +1,24 @@
+# /etc/systemd/system/mcbp-mcp.service
+# Long-lived HTTP process — unlike the stdio entry point, which dies on EOF when its client
+# leaves and must never be given a unit of its own.
+[Unit]
+Description=mcbp-ai MCP server (Streamable HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=mcbp
+Group=mcbp
+WorkingDirectory=/opt/mcbp-mcp
+EnvironmentFile=/etc/mcbp-mcp.env
+ExecStart=/opt/mcbp-mcp/.venv/bin/mcbp-http
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

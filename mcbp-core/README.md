@@ -2,7 +2,7 @@
 
 Async HTTP client and shared tool registry for the **BAS / 1C `MCBP_AI`** service (`/ai/v1`).
 
-This is the engine shared by two front-ends: the [`mcbp-mcp-server`](https://pypi.org/project/mcbp-mcp-server/)
+This is the engine shared by two front-ends: the [`mcbp`](https://pypi.org/project/mcbp/)
 MCP server and a FastAPI web chat. It holds everything that knows about BAS — routes, filters,
 response shapes, typed errors — so those front-ends hold none of it.
 

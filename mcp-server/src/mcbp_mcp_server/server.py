@@ -25,6 +25,7 @@ from mcbp_core.client import ConnectionConfig, MCBPClient
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from mcbp_mcp_server import __version__
 from mcbp_mcp_server.registry import make_on_call_tool, make_on_list_tools
 
 log = logging.getLogger("mcbp_mcp_server")
@@ -170,6 +171,7 @@ def create_server() -> Server[AppContext]:
     allow_write = _truthy(os.environ.get("MCP_ALLOW_WRITE"))
     return Server(
         "mcbp-ai",
+        version=__version__,
         lifespan=lifespan,
         on_list_tools=make_on_list_tools(allow_write),
         on_call_tool=make_on_call_tool(allow_write),

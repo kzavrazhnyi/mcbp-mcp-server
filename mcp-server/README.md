@@ -67,7 +67,7 @@ field, which is how the model corrects itself.
 Requires **Python 3.11+**.
 
 ```bash
-pip install mcbp-mcp-server
+pip install mcbp
 ```
 
 ## Configure

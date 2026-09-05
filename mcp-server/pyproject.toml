@@ -1,7 +1,7 @@
 [project]
-name = "mcbp-mcp-server"
+name = "mcbp"
 version = "0.1.0"
-description = "Standalone MCP server exposing BAS MCBP_AI (/ai/v1) to MCP clients"
+description = "Standalone MCP server exposing BAS MCBP_AI (mcbp.plus)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -23,6 +23,11 @@ Homepage = "https://mcbp.plus"
 Repository = "https://github.com/kzavrazhnyi/mcbp-mcp-server"
 
 [project.optional-dependencies]
+# Only the `mcbp-http` entry point needs these; a stdio-only install stays dependency-light.
+http = [
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -30,7 +35,8 @@ dev = [
 ]
 
 [project.scripts]
-mcbp-mcp-server = "mcbp_mcp_server.server:main"
+mcbp = "mcbp_mcp_server.server:main"
+mcbp-http = "mcbp_mcp_server.http:main"
 
 [build-system]
 requires = ["hatchling"]
