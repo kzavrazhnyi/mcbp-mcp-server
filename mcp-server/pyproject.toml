@@ -1,6 +1,6 @@
 [project]
 name = "mcbp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Standalone MCP server exposing BAS MCBP_AI (mcbp.plus)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ dependencies = [
     # name was unclaimed — publish mcbp-core first, then this constraint is what keeps the pair
     # in step. `tool.uv.sources` below only redirects the LOCAL checkout; it is not part of the
     # published wheel's metadata.
-    "mcbp-core>=0.1,<0.2",
+    "mcbp-core>=0.1.1,<0.2",
     "anyio>=4.0",
 ]
 
@@ -31,6 +31,10 @@ http = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    # Intercepts the outgoing BAS calls so `tests/test_credentials.py` can assert WHICH account
+    # a tool call reaches BAS as, without a live base.
+    "respx>=0.21",
+    "starlette>=0.40",
     "ruff>=0.7",
 ]
 
