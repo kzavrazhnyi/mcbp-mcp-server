@@ -28,6 +28,7 @@ import base64
 import binascii
 import hashlib
 import logging
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
@@ -73,14 +74,72 @@ class Credentials:
         return f"Credentials(user={self.user!r})"
 
 
-def parse_authorization(value: str) -> Credentials:
-    """`Basic <base64 user:password>` -> `Credentials`. Raises `CredentialsError` on anything
-    else — a malformed header must never fall back to the env account, which would mean a user
-    with a bad config quietly acting as the service identity."""
+@dataclass(frozen=True)
+class TokenEntry:
+    """One line of the token registry: an opaque bearer token standing in for a BAS account.
+
+    `label` exists so a log line can name WHO acted without naming the token or the password.
+    """
+
+    token: str = field(repr=False)
+    credentials: Credentials
+    label: str = ""
+
+    @property
+    def display_name(self) -> str:
+        return self.label or self.credentials.user
+
+
+class TokenRegistry:
+    """The `Bearer` half of the auth story: token -> BAS account.
+
+    Deliberately a linear scan compared with `secrets.compare_digest`, not a dict lookup. A dict
+    compares hashes and then the strings themselves with an early-exit `==`; the scan keeps the
+    comparison constant-time per entry, which is what stops a caller from probing the token a
+    byte at a time. The registries here are a handful of people, so the cost is irrelevant.
+    """
+
+    def __init__(self, entries: list[TokenEntry] | None = None) -> None:
+        self._entries: list[TokenEntry] = list(entries or ())
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    @property
+    def labels(self) -> list[str]:
+        """Safe to log: names only, never tokens."""
+        return [e.display_name for e in self._entries]
+
+    def lookup(self, token: str) -> TokenEntry | None:
+        """Compares BYTES, not strings: `compare_digest` on `str` raises `TypeError` on any
+        non-ASCII character, and a token arrives from a header, so a stray byte would turn a
+        rejection into a 500. Encoded, a non-ASCII token simply matches nothing and takes the
+        ordinary "not recognised" path — no separate error telling a caller its token was
+        merely malformed rather than unknown."""
+        probe = token.encode("utf-8")
+        found: TokenEntry | None = None
+        for entry in self._entries:
+            if secrets.compare_digest(entry.token.encode("utf-8"), probe):
+                found = entry
+        return found
+
+
+def parse_authorization(value: str, tokens: TokenRegistry | None = None) -> Credentials:
+    """`Basic <base64 user:password>` or `Bearer <token>` -> `Credentials`. Raises
+    `CredentialsError` on anything else — a malformed header must never fall back to the env
+    account, which would mean a user with a bad config quietly acting as the service identity.
+
+    The `Bearer` form exists because some MCP clients (Codex) can send a token from an env var
+    but cannot send an arbitrary header. The token itself never appears in the raised message:
+    the message reaches an HTTP response body and a log line, and the token IS the password.
+    """
     scheme, _, payload = value.partition(" ")
+    if scheme.lower() == "bearer":
+        return _resolve_bearer(payload.strip(), tokens)
     if scheme.lower() != "basic":
         raise CredentialsError(
-            "Authorization must use the Basic scheme: 'Basic <base64 of user:password>'"
+            "Authorization must use the Basic or Bearer scheme: "
+            "'Basic <base64 of user:password>' or 'Bearer <token>'"
         )
     payload = payload.strip()
     if not payload:
@@ -97,6 +156,21 @@ def parse_authorization(value: str) -> Credentials:
     if not user:
         raise CredentialsError("Authorization: Basic credentials have an empty user name")
     return Credentials(user=user, password=password)
+
+
+def _resolve_bearer(token: str, tokens: TokenRegistry | None) -> Credentials:
+    if not token:
+        raise CredentialsError("Authorization: Bearer is missing its token")
+    if tokens is None or not len(tokens):
+        raise CredentialsError(
+            "Authorization: Bearer is not accepted — no token registry is configured "
+            "(set MCP_TOKENS_FILE)"
+        )
+    entry = tokens.lookup(token)
+    if entry is None:
+        raise CredentialsError("Authorization: Bearer token is not recognised")
+    log.info("authorized bearer request for %s", entry.display_name)
+    return entry.credentials
 
 
 _request_credentials: ContextVar[Credentials | None] = ContextVar(

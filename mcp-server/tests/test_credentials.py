@@ -29,9 +29,10 @@ from mcbp_mcp_server.credentials import (
     reset_request_credentials,
     set_request_credentials,
 )
-from mcbp_mcp_server.http import _ManagerEndpoint
+from mcbp_mcp_server.credentials import TokenEntry, TokenRegistry
+from mcbp_mcp_server.http import _ManagerEndpoint, load_http_settings, load_token_registry
 from mcbp_mcp_server.registry import make_on_call_tool, make_on_list_tools
-from mcbp_mcp_server.server import AppContext, Settings
+from mcbp_mcp_server.server import AppContext, Settings, SettingsError
 
 BASE = "http://bas.test/base/hs/mcbp_ai"
 
@@ -77,6 +78,164 @@ def test_error_never_echoes_the_header():
     except CredentialsError as e:
         assert "s3cret" not in str(e)
         assert "vasyl" not in str(e)
+
+
+# --- bearer tokens ---
+
+TOKEN_A = "tok-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+TOKEN_B = "tok-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+def _registry() -> TokenRegistry:
+    return TokenRegistry([
+        TokenEntry(token=TOKEN_A, credentials=Credentials("Директор-Корнієнко", ""),
+                   label="Директор"),
+        TokenEntry(token=TOKEN_B, credentials=Credentials("olena", "pw-b")),
+    ])
+
+
+def test_bearer_with_a_known_token_resolves_its_account():
+    creds = parse_authorization(f"Bearer {TOKEN_B}", _registry())
+    assert (creds.user, creds.password) == ("olena", "pw-b")
+
+
+def test_bearer_account_may_have_an_empty_password():
+    # basmbdemo has no password; the registry must not turn that into a config error.
+    assert parse_authorization(f"Bearer {TOKEN_A}", _registry()).password == ""
+
+
+def test_bearer_scheme_is_case_insensitive():
+    assert parse_authorization(f"bearer {TOKEN_B}", _registry()).user == "olena"
+
+
+def test_unknown_bearer_token_is_rejected_without_echoing_it():
+    with pytest.raises(CredentialsError) as excinfo:
+        parse_authorization("Bearer tok-not-in-the-registry", _registry())
+    assert "tok-not-in-the-registry" not in str(excinfo.value)
+
+
+def test_non_ascii_bearer_token_is_rejected_like_any_unknown_one():
+    # `compare_digest` on `str` raises TypeError on non-ASCII, so an unencoded scan turned a
+    # stray byte in the header into a 500. A BOM is the realistic source: a token file saved as
+    # UTF-8-with-BOM prefixes the first token with ﻿.
+    registry = _registry()
+    for token in (f"﻿{TOKEN_A}", "токен-кирилицею", "tok-café"):
+        with pytest.raises(CredentialsError) as excinfo:
+            parse_authorization(f"Bearer {token}", registry)
+        assert "not recognised" in str(excinfo.value)
+        assert token not in str(excinfo.value)
+
+
+def test_bearer_without_a_registry_is_rejected():
+    with pytest.raises(CredentialsError):
+        parse_authorization(f"Bearer {TOKEN_A}")
+    with pytest.raises(CredentialsError):
+        parse_authorization(f"Bearer {TOKEN_A}", TokenRegistry())
+
+
+def test_bearer_without_a_token_is_rejected():
+    with pytest.raises(CredentialsError):
+        parse_authorization("Bearer ", _registry())
+
+
+def test_basic_still_works_when_a_registry_is_present():
+    creds = parse_authorization(_basic("vasyl", "s3cret"), _registry())
+    assert (creds.user, creds.password) == ("vasyl", "s3cret")
+
+
+def test_registry_labels_carry_no_tokens():
+    labels = _registry().labels
+    assert labels == ["Директор", "olena"]  # falls back to the BAS user when label is absent
+    assert TOKEN_A not in "".join(labels)
+
+
+def test_token_entry_repr_hides_the_token():
+    entry = TokenEntry(token=TOKEN_A, credentials=Credentials("u", "p"), label="L")
+    assert TOKEN_A not in repr(entry)
+
+
+# --- the token registry file ---
+
+def _tokens_file(tmp_path, body: str):
+    path = tmp_path / "tokens.toml"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_registry_file_is_optional():
+    assert len(load_token_registry({})) == 0
+    assert len(load_token_registry({"MCP_TOKENS_FILE": "  "})) == 0
+
+
+def test_registry_file_is_loaded(tmp_path):
+    path = _tokens_file(tmp_path, f"""
+[[users]]
+token = "{TOKEN_A}"
+onec_user = "Директор-Корнієнко"
+onec_password = ""
+label = "Директор"
+
+[[users]]
+token = "{TOKEN_B}"
+onec_user = "olena"
+onec_password = "pw-b"
+""")
+    registry = load_token_registry({"MCP_TOKENS_FILE": str(path)})
+    assert len(registry) == 2
+    assert registry.lookup(TOKEN_A).credentials == Credentials("Директор-Корнієнко", "")
+    assert registry.lookup(TOKEN_B).display_name == "olena"
+    assert registry.lookup("nope") is None
+
+
+def test_missing_registry_file_is_a_startup_error(tmp_path):
+    with pytest.raises(SettingsError) as excinfo:
+        load_token_registry({"MCP_TOKENS_FILE": str(tmp_path / "absent.toml")})
+    assert "absent.toml" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("body", [
+    "this is not toml at all ][",
+    "[[users]]\nonec_user = \"u\"\nonec_password = \"\"\n",          # no token
+    "[[users]]\ntoken = \"t\"\nonec_password = \"\"\n",              # no onec_user
+    "[[users]]\ntoken = \"t\"\nonec_user = \"u\"\n",                 # no onec_password
+    "[[users]]\ntoken = \"\"\nonec_user = \"u\"\nonec_password = \"\"\n",   # empty token
+    "[[users]]\ntoken = 42\nonec_user = \"u\"\nonec_password = \"\"\n",     # non-string
+    "users = \"nope\"\n",                                            # not an array of tables
+])
+def test_broken_registry_file_is_a_startup_error(tmp_path, body):
+    path = _tokens_file(tmp_path, body)
+    with pytest.raises(SettingsError):
+        load_token_registry({"MCP_TOKENS_FILE": str(path)})
+
+
+def test_duplicate_token_is_a_startup_error(tmp_path):
+    path = _tokens_file(tmp_path, f"""
+[[users]]
+token = "{TOKEN_A}"
+onec_user = "a"
+onec_password = ""
+
+[[users]]
+token = "{TOKEN_A}"
+onec_user = "b"
+onec_password = ""
+""")
+    with pytest.raises(SettingsError) as excinfo:
+        load_token_registry({"MCP_TOKENS_FILE": str(path)})
+    assert TOKEN_A not in str(excinfo.value)
+
+
+def test_registry_file_error_never_quotes_the_file_contents(tmp_path):
+    path = _tokens_file(tmp_path, f'[[users]]\ntoken = "{TOKEN_A}"\nonec_user = "u"\n')
+    with pytest.raises(SettingsError) as excinfo:
+        load_token_registry({"MCP_TOKENS_FILE": str(path)})
+    assert TOKEN_A not in str(excinfo.value)
+
+
+def test_require_auth_setting_defaults_to_off():
+    assert load_http_settings({}).require_auth is False
+    assert load_http_settings({"MCP_REQUIRE_AUTH": "1"}).require_auth is True
+    assert load_http_settings({"MCP_REQUIRE_AUTH": "0"}).require_auth is False
 
 
 def test_cache_key_hides_the_password_and_separates_users():
@@ -265,9 +424,11 @@ class _RecordingManager:
         await PlainTextResponse("ok")(scope, receive, send)
 
 
-def _endpoint_app() -> tuple[Starlette, _RecordingManager]:
+def _endpoint_app(tokens: TokenRegistry | None = None,
+                  require_auth: bool = False) -> tuple[Starlette, _RecordingManager]:
     manager = _RecordingManager()
-    app = Starlette(routes=[Route("/mcp", endpoint=_ManagerEndpoint(manager), methods=["POST"])])
+    endpoint = _ManagerEndpoint(manager, tokens, require_auth=require_auth)
+    app = Starlette(routes=[Route("/mcp", endpoint=endpoint, methods=["POST"])])
     return app, manager
 
 
@@ -312,6 +473,71 @@ def test_credentials_do_not_leak_between_requests():
         client.post("/mcp", headers={"authorization": _basic("vasyl", "pw")})
         client.post("/mcp")
     assert manager.seen == [Credentials("vasyl", "pw"), None]
+
+
+def test_endpoint_hands_the_bearer_account_to_the_executor():
+    app, manager = _endpoint_app(_registry())
+    with TestClient(app) as client:
+        response = client.post("/mcp", headers={"authorization": f"Bearer {TOKEN_B}"})
+    assert response.status_code == 200
+    assert manager.seen == [Credentials("olena", "pw-b")]
+
+
+def test_endpoint_rejects_an_unknown_bearer_without_leaking_it(caplog):
+    app, manager = _endpoint_app(_registry())
+    with caplog.at_level(logging.DEBUG, logger="mcbp_mcp_server"), TestClient(app) as client:
+        response = client.post("/mcp", headers={"authorization": "Bearer tok-stolen-guess"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_AUTHORIZATION"
+    assert "tok-stolen-guess" not in response.text
+    assert "tok-stolen-guess" not in caplog.text
+    assert manager.seen == []
+
+
+def test_endpoint_answers_400_not_500_for_a_non_ascii_bearer():
+    # Regression: the unencoded compare_digest scan raised TypeError out of the ASGI app, so the
+    # client saw "server broke" instead of "token not accepted" and a traceback hit the log.
+    # The value goes in as bytes: httpx encodes a str header as ASCII and would reject it here,
+    # while a real client puts arbitrary bytes on the wire and Starlette decodes them latin-1.
+    app, manager = _endpoint_app(_registry())
+    with TestClient(app) as client:
+        response = client.post("/mcp", headers={"authorization": b"Bearer tok-caf\xe9"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_AUTHORIZATION"
+    assert manager.seen == []
+
+
+def test_endpoint_never_logs_a_valid_token_either(caplog):
+    app, _ = _endpoint_app(_registry())
+    with caplog.at_level(logging.DEBUG, logger="mcbp_mcp_server"), TestClient(app) as client:
+        client.post("/mcp", headers={"authorization": f"Bearer {TOKEN_A}"})
+    assert TOKEN_A not in caplog.text
+    assert "Директор" in caplog.text  # the label is what identifies the caller in the log
+
+
+def test_require_auth_rejects_a_request_with_no_header():
+    # Without this, an unauthenticated request on a reachable port acts as the service account.
+    app, manager = _endpoint_app(_registry(), require_auth=True)
+    with TestClient(app) as client:
+        response = client.post("/mcp")
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_AUTHORIZATION"
+    assert manager.seen == []
+
+
+def test_require_auth_off_still_falls_back_to_the_env_identity():
+    app, manager = _endpoint_app(_registry(), require_auth=False)
+    with TestClient(app) as client:
+        assert client.post("/mcp").status_code == 200
+    assert manager.seen == [None]
+
+
+def test_require_auth_still_accepts_basic():
+    app, manager = _endpoint_app(_registry(), require_auth=True)
+    with TestClient(app) as client:
+        response = client.post("/mcp", headers={"authorization": _basic("vasyl", "s3cret")})
+    assert response.status_code == 200
+    assert manager.seen == [Credentials("vasyl", "s3cret")]
 
 
 # --- the whole HTTP stack, end to end ---
