@@ -2,7 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 echo === Updating mcbp[http] from TestPyPI ===
-python\python.exe -m pip install --upgrade --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ "mcbp[http]"
+python\python.exe -m pip install --upgrade --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ "mcbp[http]" mcbp-core
 if errorlevel 1 (
   echo.
   echo === UPDATE FAILED. Check network access. ===
