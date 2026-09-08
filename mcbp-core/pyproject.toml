@@ -1,6 +1,6 @@
 [project]
 name = "mcbp-core"
-version = "0.1.1"
+version = "0.1.2"
 description = "Shared async HTTP client + typed errors for BAS MCBP_AI (used by backend and mcp-server)"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -8,6 +8,7 @@ import respx
 from mcbp_core.client import ConnectionConfig, MCBPClient
 from mcbp_core.errors import (
     ConversionNotConfiguredError,
+    ForbiddenError,
     NotFoundError,
     ParameterError,
     PlusRequiredError,
@@ -644,5 +645,30 @@ async def test_describe_metadata_full_tree_cached_once_across_views():
             {"name": "A", "synonym": "A", "types": ["Число"]}
         ]
         assert route.call_count == 1
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_forbidden_envelope_typed_as_forbidden_not_upstream():
+    """A read route now answers 403 FORBIDDEN when the BAS account lacks the right on that
+    object. Without the mapping it fell through to the status-only branch and the model saw a
+    generic upstream failure — "the base is broken" instead of "you may not read this one"."""
+    # ASCII path on purpose: respx matches `url__startswith` against the ENCODED request URL,
+    # so a Cyrillic type name there would never match. The message keeps the real one.
+    respx.get(url__startswith="http://test/ai/v1/catalogs/Nomenclature").mock(
+        return_value=httpx.Response(403, json={
+            "error": {"code": "FORBIDDEN",
+                      "message": "No read right on catalog ВидыНачисленийИУдержаний"}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(ForbiddenError) as exc_info:
+            await client.list_catalog("Nomenclature", None, 10, None)
+        assert not isinstance(exc_info.value, UpstreamError)
+        assert str(exc_info.value) == "No read right on catalog ВидыНачисленийИУдержаний"
+        assert exc_info.value.code == "FORBIDDEN"
+        assert exc_info.value.http_status == 403
     finally:
         await client.shutdown()

@@ -58,6 +58,20 @@ class AuthError(MCBPError):
     http_status = 401
 
 
+class ForbiddenError(MCBPError):
+    """The BAS account authenticated, but has no right on the object it asked for.
+
+    Three different 403s reach this module and must not be collapsed: `AuthError` means the
+    credentials themselves were not accepted, `KeyMismatchError` means the infobase key did not
+    match, and this one means the login succeeded and BAS then refused THIS object. Only the
+    last is something the caller can act on by asking for something else — which is why the
+    model must see `FORBIDDEN` and not a generic upstream failure.
+    """
+
+    code = "FORBIDDEN"
+    http_status = 403
+
+
 class NotConnectedError(MCBPError):
     """No active connection to BAS — the host application must connect before issuing requests
     (`MCBPClient.startup()`, or whatever login step that host exposes)."""
