@@ -367,6 +367,62 @@ codex mcp add mcbp --url http://127.0.0.1:8010/mcp --bearer-token-env-var MCBP_T
 <div class="step">
   <div class="num">8</div>
   <div class="body">
+    <h3>Локальний клієнт: Claude Desktop</h3>
+    <p>
+      Claude Desktop підключається <strong>інакше</strong> — не до HTTP-сервера з кроків вище.
+      Його конектор приймає лише URL і не має поля для токена (шукає OAuth), а сам застосунок
+      встановлений як пакет Windows, якому закриті і адреси локальної мережі, і loopback. Тому для
+      нього поставка запускається <strong>через stdio</strong>: Claude сам стартує процес сервера і
+      говорить із ним через канал, без мережі й без токенів — обліковка BAS задається в
+      <code>env</code>.
+    </p>
+    <p>Правиться файл (застосунок має бути ЗАКРИТИЙ):</p>
+<pre><code>%APPDATA%\Claude\claude_desktop_config.json</code></pre>
+    <p>
+      Якщо цього файлу немає, застосунок встановлений із Microsoft Store — тоді конфіг лежить
+      у контейнері пакета:
+    </p>
+<pre><code>%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json</code></pre>
+    <p>У файлі вже є налаштування застосунку — додайте лише розділ <code>mcpServers</code>:</p>
+<pre><code>"mcpServers": {
+  "mcbp-ai": {
+    "command": "C:\\mcbp-mcp\\python\\python.exe",
+    "args": ["-m", "mcbp_mcp_server"],
+    "env": {
+      "ONEC_BASE_URL": "http://&lt;ВАША АДРЕСА&gt;/&lt;ваша база&gt;/hs/mcbp_ai",
+      "ONEC_USER": "&lt;обліковка BAS&gt;",
+      "ONEC_PASSWORD": "&lt;пароль&gt;",
+      "PYTHONIOENCODING": "utf-8"
+    }
+  }
+}</code></pre>
+    <div class="note">
+      <strong>Запускати саме <code>python.exe -m mcbp_mcp_server</code>, НЕ <code>Scripts\mcbp.exe</code></strong>
+      У консольний скрипт <code>mcbp.exe</code> зашитий абсолютний шлях до інтерпретатора тієї
+      машини, де поставку <em>складали</em>. На машині, куди її скопіювали, того шляху немає, і
+      Claude Desktop не підніме сервер — без зрозумілого повідомлення. Модульний виклик залежить
+      лише від теки поставки.
+    </div>
+    <p>
+      <code>PYTHONIOENCODING</code> обов'язковий: без нього кирилиця в каналі stdio псується.
+      Щоб додати три інструменти запису, впишіть у той самий <code>env</code> рядок
+      <code>"MCP_ALLOW_WRITE": "1"</code>.
+    </p>
+    <div class="note">
+      <strong>Потрібен ПОВНИЙ вихід із застосунку</strong>
+      Конфіг читається лише при старті, а закрите вікно процес не завершує — вийдіть через значок
+      у системному треї. Після запуску сервер видно в меню <code>+</code> → <strong>Connectors</strong>.
+    </div>
+    <p>
+      HTTP-режим і stdio не конфліктують: це різні процеси над однією базою, тож Claude Desktop і
+      мережеві клієнти можуть працювати одночасно.
+    </p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">9</div>
+  <div class="body">
     <h3>Оновлення</h3>
     <p>
       <code>update.cmd</code> тягне свіжі <code>mcbp[http]</code> і <code>mcbp-core</code> з
@@ -396,6 +452,8 @@ codex mcp add mcbp --url http://127.0.0.1:8010/mcp --bearer-token-env-var MCBP_T
         <tr><td>немає інструментів запису</td><td><code>MCP_ALLOW_WRITE=0</code> — типовий стан; <code>1</code> додає три інструменти запису</td></tr>
         <tr><td>клієнт з іншої машини не підключається</td><td>правило брандмауера з <code>-Profile Private</code> при мережі <code>Public</code></td></tr>
         <tr><td>помилка сертифіката у клієнта</td><td>не виконано <code>trust-cert.cmd</code>, або сертифікат виданий на іншу адресу</td></tr>
+        <tr><td>Claude Desktop не показує сервер</td><td>застосунок не перезапущено повністю (значок у треї), або в <code>command</code> стоїть <code>Scripts\mcbp.exe</code> замість <code>python.exe -m mcbp_mcp_server</code></td></tr>
+        <tr><td>інструментів менше, ніж очікували</td><td>якщо серед них є хоч один із трьох на запис — гейт увімкнений, а список урізав сам клієнт (він довантажує визначення партіями)</td></tr>
       </tbody>
     </table>
   </div>
