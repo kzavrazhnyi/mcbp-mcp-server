@@ -20,7 +20,7 @@
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\make-cert.ps1
-    powershell -ExecutionPolicy Bypass -File .\make-cert.ps1 -DnsName mcbp.local -IPAddress 192.168.1.50
+    powershell -ExecutionPolicy Bypass -File .\make-cert.ps1 -DnsName <імʼя машини> -IPAddress <LAN-адреса>
 #>
 [CmdletBinding()]
 param(

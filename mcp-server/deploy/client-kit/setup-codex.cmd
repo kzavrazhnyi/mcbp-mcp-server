@@ -7,7 +7,7 @@ echo.
 set "MCP_URL=%~1"
 set "MCP_TOKEN=%~2"
 
-if "%MCP_URL%"=="" set /p MCP_URL=Server URL (example https://192.168.0.218:8443/mcp): 
+if "%MCP_URL%"=="" set /p MCP_URL=Server URL (example https://YOUR-SERVER-IP:8443/mcp): 
 if "%MCP_TOKEN%"=="" set /p MCP_TOKEN=Access token: 
 
 if "%MCP_URL%"=="" (

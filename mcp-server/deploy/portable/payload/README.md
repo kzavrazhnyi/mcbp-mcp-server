@@ -25,8 +25,11 @@
 | `server.env` | ваша конфігурація — єдиний файл, який треба редагувати |
 | `start.cmd` | запуск |
 | `update.cmd` | оновлення пакета `mcbp` з TestPyPI |
+| `new-token.cmd` | друкує випадковий токен доступу для клієнта |
+| `tokens.example.toml` | зразок реєстру токенів — скопіюйте у `tokens.toml` |
 | `make-cert.ps1` | створення самопідписаного сертифіката для https |
 | `certs\` | сюди лягають сертифікати |
+| `ВСТАНОВЛЕННЯ.html` | покрокова інструкція розгортання — відкривається подвійним кліком |
 
 ## Налаштування
 
@@ -67,7 +70,7 @@
    ```
    Для доступу по мережі вкажіть реальні ім'я та адресу машини:
    ```
-   powershell -ExecutionPolicy Bypass -File .\make-cert.ps1 -DnsName mcbp.local -IPAddress 192.168.1.50
+   powershell -ExecutionPolicy Bypass -File .\make-cert.ps1 -DnsName <імʼя машини> -IPAddress <LAN-адреса>
    ```
 3. Розкоментуйте в `server.env` два останні рядки:
    ```

@@ -18,7 +18,7 @@
 param(
     [string] $OutDir = "C:\PYTHON\mcbp\tmp\mcbp-mcp-portable",
     [string] $PythonVersion = "3.11.9",
-    [string] $McbpVersion = "0.2.0",
+    [string] $McbpVersion = "0.2.3",
     [string] $CacheDir = (Join-Path $env:TEMP "mcbp-portable-build"),
     [switch] $Force
 )
@@ -92,6 +92,13 @@ if ($LASTEXITCODE -ne 0) { throw "pip install cryptography завершився 
 Write-Host "Розкладаю файли поставки ..."
 Copy-Item -Path (Join-Path $payload "*") -Destination $OutDir -Recurse -Force
 New-Item -ItemType Directory -Path (Join-Path $OutDir "certs") -Force | Out-Null
+
+# Комплект клієнта їде разом із поставкою: адміністратор роздає ці файли, не всю теку.
+$clientKit = Join-Path (Split-Path -Parent (Split-Path -Parent $payload)) "client-kit"
+if (-not (Test-Path $clientKit)) { throw "Не знайдено теку client-kit: $clientKit" }
+$clientKitOut = Join-Path $OutDir "client-kit"
+New-Item -ItemType Directory -Path $clientKitOut -Force | Out-Null
+Copy-Item -Path (Join-Path $clientKit "*") -Destination $clientKitOut -Recurse -Force
 
 # --- 5. Підсумок --------------------------------------------------------------------------
 $installed = & $python -c "from importlib.metadata import version; print(version('mcbp'), version('mcbp-core'))"

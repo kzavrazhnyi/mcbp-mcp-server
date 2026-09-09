@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Встановлення MCP-сервера mcbp-ai</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #fbfaf8;
+    --surface: #ffffff;
+    --border: #e3ded6;
+    --text: #1d1b18;
+    --muted: #6b655c;
+    --accent: #8a4b2a;
+    --accent-soft: #f4ece5;
+    --code-bg: #f5f2ee;
+    --warn-bg: #fdf5e8;
+    --warn-border: #d9a441;
+    --ok-bg: #eef5ee;
+    --ok-border: #5b8c5a;
+    --admin-bg: #f6eef3;
+    --admin-border: #9a4f7d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #171614;
+      --surface: #1f1e1b;
+      --border: #363330;
+      --text: #eae6df;
+      --muted: #a29a8f;
+      --accent: #d98f63;
+      --accent-soft: #2b241f;
+      --code-bg: #26241f;
+      --warn-bg: #2c2519;
+      --warn-border: #b98c3a;
+      --ok-bg: #1d2620;
+      --ok-border: #6a9b68;
+      --admin-bg: #2a1f26;
+      --admin-border: #b06a92;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 24px 96px; }
+  header { border-bottom: 2px solid var(--border); padding-bottom: 24px; margin-bottom: 8px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 16px; max-width: 62ch; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .facts li {
+    background: var(--accent-soft); color: var(--accent); border-radius: 999px;
+    padding: 4px 12px; font-size: 13px; font-weight: 600;
+  }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 48px 0 16px; font-weight: 700;
+  }
+  .step { display: flex; gap: 18px; padding: 24px 0; border-top: 1px solid var(--border); }
+  .step:first-of-type { border-top: none; }
+  .num {
+    flex: 0 0 34px; height: 34px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 15px;
+  }
+  .body { min-width: 0; flex: 1; }
+  .step h3 { margin: 4px 0 10px; font-size: 19px; }
+  p { margin: 0 0 12px; }
+  ul, ol { margin: 0 0 12px; padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  code {
+    background: var(--code-bg); border-radius: 4px; padding: 1px 5px;
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; margin: 0 0 14px;
+  }
+  pre code { background: none; padding: 0; font-size: 13.5px; line-height: 1.55; }
+  .note {
+    border-left: 4px solid var(--warn-border); background: var(--warn-bg);
+    padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 0 0 14px;
+  }
+  .note strong { display: block; margin-bottom: 4px; }
+  .note.ok { border-color: var(--ok-border); background: var(--ok-bg); }
+  .admin {
+    display: inline-block; background: var(--admin-bg); color: var(--admin-border);
+    border: 1px solid var(--admin-border); border-radius: 999px;
+    padding: 1px 9px; font-size: 12px; font-weight: 700; vertical-align: middle;
+    margin-left: 8px; white-space: nowrap;
+  }
+  .table-scroll { overflow-x: auto; margin: 0 0 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  tbody tr:last-child td { border-bottom: none; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px 22px; margin-bottom: 16px;
+  }
+  footer { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; }
+  @media print {
+    body { background: #fff; }
+    .step { break-inside: avoid; }
+    pre { white-space: pre-wrap; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Встановлення MCP-сервера mcbp-ai</h1>
+  <p class="lede">
+    Ця тека — готова поставка: усередині вбудований Python і встановлений пакет. У систему
+    нічого ставити не треба. Скопіювали, налаштували, запустили.
+  </p>
+  <ul class="facts">
+    <li>Python 3.11.9</li>
+    <li>mcbp 0.2.3</li>
+    <li>mcbp-core 0.1.3</li>
+    <li>~95 МБ</li>
+    <li>Windows x64</li>
+  </ul>
+</header>
+
+<p style="margin-top:24px">
+  Повний довідник по параметрах — <code>README.md</code> поруч. Тут — порядок дій.
+  Кроки, позначені <span class="admin">потрібен адміністратор</span>, виконуються у вікні
+  PowerShell, відкритому через «Запуск від імені адміністратора».
+</p>
+
+<h2>Порядок дій</h2>
+
+<div class="step">
+  <div class="num">1</div>
+  <div class="body">
+    <h3>Скопіювати теку</h3>
+    <pre><code>robocopy &lt;тека поставки&gt; C:\mcbp-mcp /E</code></pre>
+    <p>
+      Тека <code>certs\</code> порожня, <code>tokens.toml</code> ще немає — обидва
+      зʼявляться на кроках 3 і 4.
+    </p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">2</div>
+  <div class="body">
+    <h3>Підключення до BAS</h3>
+    <p>Відкрийте <code>server.env</code> (UTF-8, Блокнот підійде) і задайте три значення:</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Ключ</th><th>Що вписати</th></tr></thead>
+        <tbody>
+          <tr><td><code>ONEC_BASE_URL</code></td><td>адреса HTTP-сервісу <code>MCBP_AI</code> <strong>без</strong> хвостового <code>/ai/v1</code></td></tr>
+          <tr><td><code>ONEC_USER</code></td><td>обліковка BAS для запитів без авторизації — тримайте мінімальні права</td></tr>
+          <tr><td><code>ONEC_PASSWORD</code></td><td>пароль; ключ має <strong>бути присутнім</strong> навіть із порожнім значенням</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>ONEC_BASE_URL=http://&lt;ВАША АДРЕСА&gt;/&lt;ваша база&gt;/hs/mcbp_ai</code></pre>
+    <p>
+      Замість <code>&lt;ВАША АДРЕСА&gt;</code> — імʼя або IP машини, де опублікована база
+      (<code>ipconfig</code> покаже адресу; якщо база на цій самій машині, підійде
+      <code>localhost</code>). Замість <code>&lt;ваша база&gt;</code> — імʼя публікації в IIS.
+      Сегмент <code>mcbp_ai</code> подвоюється з <code>ai/v1</code> усередині сервісу — це нормально.
+    </p>
+    <div class="note">
+      <strong>Пастка, що коштує години</strong>
+      Якщо сервер стоїть НЕ на машині з BAS, <code>localhost</code> у цьому рядку означає вже саму
+      машину сервера. Симптом — не зрозуміла відмова, а мовчазний таймаут при старті. Ставте
+      адресу машини з базою і відкрийте на ній порт 80: IIS слухає <code>0.0.0.0:80</code>, але
+      правила брандмауера для нього типово немає.
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">3</div>
+  <div class="body">
+    <h3>Токени доступу</h3>
+    <p>
+      Кожному клієнтові — свій токен, зіставлений з обліковкою BAS. Так у журналі реєстрації
+      бази дії йдуть від імені конкретної людини, а не спільного службового запису.
+    </p>
+    <ol>
+      <li>Запустіть <code>new-token.cmd</code> — надрукує випадковий рядок. По одному на клієнта.</li>
+      <li>Скопіюйте <code>tokens.example.toml</code> у <code>tokens.toml</code> і замініть значення:</li>
+    </ol>
+<pre><code>[[users]]
+token = "&lt;рядок з new-token.cmd&gt;"
+onec_user = "Директор-Корнієнко"
+onec_password = ""
+label = "Директор"</code></pre>
+    <p>Далі увімкніть реєстр у <code>server.env</code>:</p>
+<pre><code>MCP_TOKENS_FILE=tokens.toml
+MCP_REQUIRE_AUTH=1</code></pre>
+    <p>
+      <code>MCP_REQUIRE_AUTH=1</code> означає: запит без заголовка <code>Authorization</code>
+      відхиляється (400), а не виконується під службовою обліковкою. Разом із доступом по мережі
+      це обовʼязково — інакше будь-хто в мережі працює службовим записом.
+    </p>
+    <div class="note">
+      <strong>Файл читається при старті</strong>
+      Після правки токенів сервер треба перезапустити. У файлі паролі — тримайте його поза
+      загальним доступом і не кладіть у git.
+    </div>
+    <div class="note">
+      <strong><code>onec_password</code> — це пароль до <em>тієї</em> бази</strong>
+      Обліковка з токена перевіряється базою з <code>ONEC_BASE_URL</code>. Перемкнули сервер на
+      іншу базу — перевірте паролі в <code>tokens.toml</code>: сервер стартує нормально,
+      <code>/healthz</code> відповідає <code>ok</code>, і лише перший виклик інструмента дає
+      <code>AUTH_FAILED: BAS rejected credentials (401)</code>.
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">4</div>
+  <div class="body">
+    <h3>Доступ по мережі та HTTPS <span class="admin">потрібен адміністратор</span></h3>
+    <div class="note ok">
+      <strong>Клієнт на цій самій машині? Пропустіть цей крок цілком.</strong>
+      Лишіть <code>MCP_HTTP_HOST=127.0.0.1</code> і <code>MCP_HTTP_PORT=8010</code>, а рядки
+      <code>MCP_HTTP_SSL_*</code> — закоментованими. Трафік не виходить за межі машини, тож
+      ані сертифікат, ані правило брандмауера, ані права адміністратора не потрібні. Адреса
+      для клієнта буде <code>http://127.0.0.1:8010/mcp</code>.
+    </div>
+    <p>Якщо клієнти на інших машинах — у <code>server.env</code>:</p>
+<pre><code>MCP_HTTP_HOST=0.0.0.0
+MCP_HTTP_PORT=8443</code></pre>
+    <p>Далі сертифікат — у теці поставки, з адмінського вікна:</p>
+<pre><code>powershell -ExecutionPolicy Bypass -File .\make-cert.ps1 -DnsName &lt;імʼя машини&gt; -IPAddress &lt;LAN-адреса&gt;</code></pre>
+    <p>Потім розкоментуйте в <code>server.env</code> два останні рядки:</p>
+<pre><code>MCP_HTTP_SSL_CERTFILE=certs\mcbp-mcp.crt.pem
+MCP_HTTP_SSL_KEYFILE=certs\mcbp-mcp.key.pem</code></pre>
+    <p>І відкрийте порт у брандмауері:</p>
+<pre><code>New-NetFirewallRule -DisplayName "MCBP MCP 8443" -Direction Inbound `
+  -Protocol TCP -LocalPort 8443 -Action Allow -Profile Any</code></pre>
+    <div class="note">
+      <strong>Пастка брандмауера, яку не видно на власній машині</strong>
+      Правило з <code>-Profile Private</code> не діє, якщо інтерфейси мають категорію
+      <code>Public</code>. Локально це непомітно — трафік на власну адресу не фільтрується, —
+      а чужа машина буде заблокована. Тому <code>-Profile Any</code>, або переведіть мережу
+      в Private.
+    </div>
+    <p>
+      Без HTTPS облікові дані BAS ідуть у заголовку відкритим текстом при кожному запиті. Поки
+      <code>MCP_HTTP_HOST=127.0.0.1</code>, це неважливо; щойно <code>0.0.0.0</code> —
+      вмикайте https.
+    </p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">5</div>
+  <div class="body">
+    <h3>Запуск і перевірка</h3>
+    <p>Подвійний клік на <code>start.cmd</code>. Вікно лишається відкритим, зупинка — <code>Ctrl+C</code> у ньому ж.</p>
+<pre><code>curl http://127.0.0.1:8010/healthz          # має відповісти: ok
+curl -I https://&lt;адреса&gt;:8443/healthz       # з іншої машини, якщо ввімкнули https</code></pre>
+    <p>
+      У вікні сервера при старті має бути рядок <code>GET ai/v1/health → 200</code> — це доказ,
+      що база відповідає. Холодний старт бази 6–10 с, далі відповіді ~10 мс: перший повільний
+      запит не є проблемою продуктивності.
+    </p>
+    <p>
+      Сам MCP-ендпоінт — <code>/mcp</code>. У браузері він не відкривається (лише POST/GET/DELETE
+      у межах MCP-сесії), тому для перевірки живості існує <code>/healthz</code>.
+    </p>
+    <div class="note">
+      <strong>Дрібниця, що коштує кроку</strong>
+      Сервер, запущений з адмінського вікна, звичайною сесією не зупиняється
+      (<code>Stop-Process</code> → <code>Access is denied</code>). Завершуйте
+      <code>Ctrl+C</code> у його ж вікні.
+    </div>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">6</div>
+  <div class="body">
+    <h3>Що видати клієнтові</h3>
+    <p>Клієнтові не потрібна ця тека — йому йдуть чотири файли з <code>client-kit\</code>:</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Файл</th><th>Призначення</th></tr></thead>
+        <tbody>
+          <tr><td><code>README.md</code></td><td>інструкція клієнта, три кроки</td></tr>
+          <tr><td><code>trust-cert.cmd</code></td><td>вносить сертифікат у довірені кореневі (від адміністратора)</td></tr>
+          <tr><td><code>setup-codex.cmd</code></td><td>реєструє сервер у Codex CLI</td></tr>
+          <tr><td><code>mcbp-mcp.cer</code></td><td>покладіть туди з <code>certs\</code> — лише публічна частина</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Плюс словами: адреса <code>https://&lt;адреса&gt;:8443/mcp</code> і персональний токен.</p>
+    <div class="note">
+      <strong>Приватний ключ не передавайте нікому</strong>
+      <code>certs\mcbp-mcp.key.pem</code> і <code>certs\mcbp-mcp.pfx</code> лишаються на сервері:
+      власник ключа може видати себе за ваш сервер.
+    </div>
+    <p>Для Claude Code замість Codex клієнт додає у свій <code>.mcp.json</code>:</p>
+<pre><code>{
+  "mcpServers": {
+    "mcbp-ai": {
+      "type": "http",
+      "url": "https://&lt;адреса&gt;:8443/mcp",
+      "headers": { "Authorization": "Bearer ${MCBP_TOKEN}" }
+    }
+  }
+}</code></pre>
+    <p>
+      Незадана змінна <code>MCBP_TOKEN</code> конектор не валить — сервер отримає нерозкритий
+      текст <code>${MCBP_TOKEN}</code> і відмовить, тобто помилка конфігу виглядатиме як
+      відмова авторизації.
+    </p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">7</div>
+  <div class="body">
+    <h3>Локальний клієнт: ChatGPT Desktop / Codex</h3>
+    <p>
+      Найкоротший шлях перевірити сервер — підключити клієнта на тій самій машині. Тоді
+      сертифікат не потрібен (див. крок 4), а адреса — <code>http://127.0.0.1:8010/mcp</code>.
+    </p>
+    <p><strong>Через комплект клієнта.</strong> Запустіть <code>client-kit\setup-codex.cmd</code>:</p>
+<pre><code>client-kit\setup-codex.cmd http://127.0.0.1:8010/mcp &lt;ваш токен&gt;</code></pre>
+    <p>
+      Скрипт знаходить <code>codex.exe</code> (у <code>PATH</code> або під
+      <code>%LOCALAPPDATA%\OpenAI\Codex\bin\</code>, у тому числі у вкладеній теці збірки),
+      кладе токен у змінну користувача <code>MCBP_TOKEN</code> через <code>setx</code> і виконує
+      <code>codex mcp add</code>.
+    </p>
+    <p><strong>Або вручну</strong> — те саме двома командами:</p>
+<pre><code>setx MCBP_TOKEN "&lt;ваш токен&gt;"
+codex mcp add mcbp --url http://127.0.0.1:8010/mcp --bearer-token-env-var MCBP_TOKEN</code></pre>
+    <p>
+      Запис лягає в <code>%USERPROFILE%\.codex\config.toml</code> як секція
+      <code>[mcp_servers.mcbp]</code>. ChatGPT Desktop читає той самий файл — після правки
+      перезапустіть застосунок.
+    </p>
+    <div class="note">
+      <strong>Дві пастки, що дають однаковий симптом «не працює»</strong>
+      <code>setx</code> діє лише на <em>нові</em> процеси — закрийте термінал і відкрийте новий,
+      інакше змінна порожня. І перевірте, що в секції <code>[mcp_servers.mcbp]</code> є рядок
+      <code>bearer_token_env_var</code>: сам лише <code>url</code> при
+      <code>MCP_REQUIRE_AUTH=1</code> дасть 400, і виглядатиме це як несправний сервер.
+    </div>
+    <p>Перевірка:</p>
+<pre><code>codex mcp list</code></pre>
+    <p>
+      Сервер <code>mcbp</code> має бути у списку. Далі попросіть у клієнті, наприклад, перелік
+      довідників — відповісти має база, а не помилка авторизації.
+    </p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="num">8</div>
+  <div class="body">
+    <h3>Оновлення</h3>
+    <p>
+      <code>update.cmd</code> тягне свіжі <code>mcbp[http]</code> і <code>mcbp-core</code> з
+      TestPyPI. <code>server.env</code> і <code>tokens.toml</code> при цьому не чіпаються — саме
+      тому вони й лежать поза пакетом.
+    </p>
+    <div class="note">
+      <strong>Не прибирайте <code>mcbp-core</code> з команди</strong>
+      З одним лише <code>mcbp</code> оновлення проходить «успішно», але ядро лишається старим —
+      і виправлення до клієнта не доходять.
+    </div>
+  </div>
+</div>
+
+<h2>Якщо не запускається</h2>
+<div class="card">
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>Симптом</th><th>Причина</th></tr></thead>
+      <tbody>
+        <tr><td><code>помилка в server.env: ...</code></td><td>пропущений ключ; найчастіше відсутній <code>ONEC_PASSWORD</code> — порожнє значення легальне, відсутній ключ ні</td></tr>
+        <tr><td>мовчазний таймаут при старті</td><td><code>ONEC_BASE_URL</code> вказує на <code>localhost</code> там, де бази немає</td></tr>
+        <tr><td>усі маршрути 404, а <code>/health</code> живий</td><td>у <code>ONEC_BASE_URL</code> лишився хвіст <code>/ai/v1</code></td></tr>
+        <tr><td><code>address already in use</code></td><td>порт зайнятий — змініть <code>MCP_HTTP_PORT</code></td></tr>
+        <tr><td>клієнт отримує 400</td><td><code>MCP_REQUIRE_AUTH=1</code>, а токена немає або він не з <code>tokens.toml</code></td></tr>
+        <tr><td>сервер не стартує після правки токенів</td><td><code>MCP_TOKENS_FILE</code> заданий, а файл відсутній або битий — це навмисно: мовчазний старт без Bearer виглядав би робочим</td></tr>
+        <tr><td>немає інструментів запису</td><td><code>MCP_ALLOW_WRITE=0</code> — типовий стан; <code>1</code> додає три інструменти запису</td></tr>
+        <tr><td>клієнт з іншої машини не підключається</td><td>правило брандмауера з <code>-Profile Private</code> при мережі <code>Public</code></td></tr>
+        <tr><td>помилка сертифіката у клієнта</td><td>не виконано <code>trust-cert.cmd</code>, або сертифікат виданий на іншу адресу</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<footer>
+  Складено і перевірено наскрізь 08.09.2026: сервер піднявся, <code>/healthz</code> відповів
+  <code>ok</code>, запит без токена відхилено (400), з токеном — <code>initialize</code> →
+  10 інструментів → <code>list_metadata</code> повернув 338 довідників живої бази.
+</footer>
+
+</div>
+</body>
+</html>
