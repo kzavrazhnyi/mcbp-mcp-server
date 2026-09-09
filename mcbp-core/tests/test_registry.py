@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+from mcbp_core.errors import ParameterError
 from mcbp_core.tools import TOOLS, ToolSpec, tool_specs
 
 
@@ -25,6 +27,33 @@ def test_every_parameters_is_a_valid_object_schema():
         assert isinstance(params["properties"], dict)
         assert isinstance(params["required"], list)
         assert set(params["required"]) <= set(params["properties"]), spec.name
+
+
+def test_validate_arguments_accepts_a_complete_call():
+    TOOLS["search_catalog"].validate_arguments({"type": "Контрагенты", "limit": 5})
+
+
+def test_validate_arguments_names_the_missing_key_and_the_accepted_ones():
+    # A misspelled parameter reaches the executor as a missing one; the message must let the
+    # model fix the call itself instead of seeing a bare KeyError('type').
+    with pytest.raises(ParameterError) as excinfo:
+        TOOLS["search_catalog"].validate_arguments({"catalog": "Контрагенты"})
+    message = excinfo.value.message
+    assert excinfo.value.code == "BAD_PARAMETER"
+    assert "type" in message
+    assert "cursor" in message  # the accepted list, not just the missing name
+
+
+def test_validate_arguments_reports_every_missing_key_at_once():
+    with pytest.raises(ParameterError) as excinfo:
+        TOOLS["get_object"].validate_arguments({})
+    for name in TOOLS["get_object"].parameters["required"]:
+        assert name in excinfo.value.message
+
+
+def test_validate_arguments_ignores_extra_keys():
+    # register_balance deliberately accepts dimensions as top-level keys.
+    TOOLS["get_register_balance"].validate_arguments({"type": "ТоварыНаСкладах", "Склад": "X"})
 
 
 def test_tool_specs_default_excludes_write_tools():

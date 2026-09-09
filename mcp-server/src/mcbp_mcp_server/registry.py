@@ -81,6 +81,9 @@ def make_on_call_tool(allow_write: bool) -> _OnCallTool:
             )
         arguments = params.arguments or {}
         try:
+            # Before the executor, not inside it: executors index required arguments directly, so
+            # a misspelled name would otherwise surface as a bare KeyError the model cannot act on.
+            spec.validate_arguments(arguments)
             # The client is chosen per REQUEST, not per process: an HTTP caller presenting its
             # own BAS account runs as that account (see `credentials.py`), stdio always runs as
             # the env identity.
@@ -91,6 +94,16 @@ def make_on_call_tool(allow_write: bool) -> _OnCallTool:
                 raise to_mcp_error(exc) from exc
             log.warning("%s -> %s: %s", spec.name, exc.code, exc.message)
             return to_tool_error(exc)
+        except Exception as exc:  # noqa: BLE001
+            # An untyped error would reach the JSON-RPC dispatcher, which discards its message and
+            # answers a generic "Internal server error". A tool result keeps the text.
+            log.exception("%s raised an untyped error", spec.name)
+            return types.CallToolResult(
+                is_error=True,
+                content=[
+                    types.TextContent(type="text", text=f"TOOL_FAILED: {type(exc).__name__}: {exc}"),
+                ],
+            )
         # Cyrillic is the overwhelming majority of BAS field values — ensure_ascii=False keeps
         # the response readable and avoids bloating the token count with \uXXXX escapes.
         text = json.dumps(result, ensure_ascii=False)

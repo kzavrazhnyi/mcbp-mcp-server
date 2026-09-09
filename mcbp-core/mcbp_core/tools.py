@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from mcbp_core.client import MCBPClient
+from mcbp_core.errors import ParameterError
 
 Executor = Callable[[MCBPClient, dict[str, Any]], Awaitable[Any]]
 
@@ -33,6 +34,23 @@ class ToolSpec:
     read_only: bool = True
     surfaces: frozenset[str] = field(default_factory=lambda: _BOTH_SURFACES)
     description_en: str | None = None
+
+    def validate_arguments(self, arguments: dict[str, Any]) -> None:
+        """Raise `ParameterError` naming the missing keys and the accepted ones.
+
+        Executors read required arguments as `a["type"]`, so a model that misspells a parameter
+        gets a bare `KeyError`. That escapes as an opaque protocol error whose message is just
+        `'type'` — the model cannot tell a wrong name from a broken server, so it does not
+        self-correct. Callers validate here BEFORE the executor runs.
+        """
+        missing = [name for name in self.parameters.get("required", []) if name not in arguments]
+        if not missing:
+            return
+        accepted = ", ".join(self.parameters.get("properties", {})) or "(none)"
+        raise ParameterError(
+            f"{self.name}: missing required parameter(s): {', '.join(missing)}. "
+            f"Accepted parameters: {accepted}",
+        )
 
 
 def _params(properties: dict, required: list[str]) -> dict[str, Any]:

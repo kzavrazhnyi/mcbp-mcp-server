@@ -116,6 +116,35 @@ async def test_bad_parameter_visible_to_model_as_tool_error():
     assert "BAD_PARAMETER" in result.content[0].text
 
 
+async def test_misspelled_required_parameter_is_bad_parameter_not_a_key_error():
+    # Live regression (09.09.2026): `search_catalog` called with `catalog` instead of `type` came
+    # back as {"code": 0, "message": "'type'"} — a bare KeyError the model cannot self-correct.
+    async with Client(_mock_server()) as client:
+        result = await client.call_tool("search_catalog", {"catalog": "Контрагенты"})
+    assert result.is_error is True
+    text = result.content[0].text
+    assert "BAD_PARAMETER" in text
+    assert "type" in text
+
+
+async def _raise_untyped(client: object, args: dict) -> None:
+    raise RuntimeError("upstream exploded")
+
+
+async def test_untyped_error_keeps_its_message_as_a_tool_error(monkeypatch):
+    spec = ToolSpec(
+        "boom",
+        "raises a plain RuntimeError for the test",
+        {"type": "object", "properties": {}, "required": []},
+        _raise_untyped,
+    )
+    monkeypatch.setattr("mcbp_mcp_server.registry.tool_specs", lambda **kwargs: [spec])
+    async with Client(_mock_server()) as client:
+        result = await client.call_tool("boom", {})
+    assert result.is_error is True
+    assert "upstream exploded" in result.content[0].text
+
+
 async def test_unknown_tool_name_is_a_tool_error_not_a_crash():
     async with Client(_mock_server()) as client:
         result = await client.call_tool("no_such_tool", {})
