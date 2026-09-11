@@ -9,6 +9,7 @@ from mcbp_core.client import ConnectionConfig, MCBPClient
 from mcbp_core.errors import (
     ConversionNotConfiguredError,
     ForbiddenError,
+    LicenseRequiredError,
     NotFoundError,
     ParameterError,
     PlusRequiredError,
@@ -96,6 +97,26 @@ async def test_bad_parameter_envelope_typed_as_parameter_error():
         with pytest.raises(ParameterError) as exc_info:
             await client.patch_object("Documents", "X", "e3f1d9b6-0001", {"Foo": "bar"})
         assert "Unknown field" in str(exc_info.value)
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_license_required_envelope_typed_not_upstream_error():
+    # Live regression (11.09.2026): the gated MCBP_AI answers 403 LICENSE_REQUIRED, which used to
+    # land in UpstreamError — the model read a missing licence as a temporary BAS failure.
+    respx.get("http://test/ai/v1/metadata/Catalogs").mock(
+        return_value=httpx.Response(403, json={
+            "error": {"code": "LICENSE_REQUIRED",
+                      "message": "MCBP+ license for ArtificialIntelligence is required"}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(LicenseRequiredError) as exc_info:
+            await client.list_metadata(kind="Catalogs")
+        assert exc_info.value.code == "LICENSE_REQUIRED"
+        assert "license" in str(exc_info.value).lower()
     finally:
         await client.shutdown()
 

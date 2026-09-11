@@ -21,15 +21,18 @@ message="Internal server error")` — the original message is DISCARDED. So:
 """
 from __future__ import annotations
 
-from mcbp_core.errors import AuthError, KeyMismatchError, MCBPError
+from mcbp_core.errors import AuthError, KeyMismatchError, LicenseRequiredError, MCBPError
 from mcp import MCPError, types
 
-_FATAL: tuple[type[MCBPError], ...] = (KeyMismatchError, AuthError)
+_FATAL: tuple[type[MCBPError], ...] = (KeyMismatchError, AuthError, LicenseRequiredError)
 
 
 def is_fatal(exc: MCBPError) -> bool:
-    """True for the two error types that are a fatal configuration issue, not a recoverable
-    tool-call failure — the model cannot self-correct a key mismatch or bad credentials."""
+    """True for the error types that are a fatal configuration issue, not a recoverable tool-call
+    failure — the model cannot self-correct a key mismatch, bad credentials or a missing licence.
+
+    A licence covers the whole service: every remaining tool would fail identically, so surfacing
+    it as an ordinary tool error would have the model walk the registry one call at a time."""
     return isinstance(exc, _FATAL)
 
 

@@ -31,6 +31,7 @@ from mcbp_core.errors import (
     ConversionNotConfiguredError,
     ForbiddenError,
     KeyMismatchError,
+    LicenseRequiredError,
     MCBPError,
     NotConfiguredError,
     NotFoundError,
@@ -53,6 +54,7 @@ _ERROR_MARKERS: list[tuple[str, type]] = [
 # CONVERSION_NOT_CONFIGURED) instead of every >=400 response collapsing into UpstreamError.
 _ERROR_CODE_MAP: dict[str, type[MCBPError]] = {
     "KEY_MISMATCH": KeyMismatchError,
+    "LICENSE_REQUIRED": LicenseRequiredError,
     "BAD_JSON": ParameterError,
     "BAD_PARAMETER": ParameterError,
     "NOT_FOUND": NotFoundError,

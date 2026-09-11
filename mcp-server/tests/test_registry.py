@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 from mcbp_core.client import ConnectionConfig, MCBPClient
-from mcbp_core.errors import KeyMismatchError
+from mcbp_core.errors import KeyMismatchError, LicenseRequiredError
 from mcbp_core.tools import ToolSpec, tool_specs
 from mcp import Client, MCPError
 from mcp.server import Server
@@ -165,6 +165,26 @@ def _fatal_spec() -> ToolSpec:
         {"type": "object", "properties": {}, "required": []},
         _raise_key_mismatch,
     )
+
+
+async def _raise_license_required(client: object, args: dict) -> None:
+    raise LicenseRequiredError("MCBP+ license for ArtificialIntelligence is required")
+
+
+async def test_license_required_is_fatal_not_a_retryable_tool_error(monkeypatch):
+    # A licence covers the whole service: as an ordinary tool error the model would walk the
+    # registry, failing identically on all ten tools.
+    spec = ToolSpec(
+        "boom",
+        "raises LicenseRequiredError for the test",
+        {"type": "object", "properties": {}, "required": []},
+        _raise_license_required,
+    )
+    monkeypatch.setattr("mcbp_mcp_server.registry.tool_specs", lambda **kwargs: [spec])
+    async with Client(_mock_server()) as client:
+        with pytest.raises(MCPError) as exc_info:
+            await client.call_tool("boom", {})
+    assert "LICENSE_REQUIRED" in str(exc_info.value)
 
 
 async def test_key_mismatch_raises_mcp_error_not_a_result(monkeypatch):

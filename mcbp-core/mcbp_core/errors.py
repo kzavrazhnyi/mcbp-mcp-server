@@ -58,6 +58,18 @@ class AuthError(MCBPError):
     http_status = 401
 
 
+class LicenseRequiredError(MCBPError):
+    """The MCBP_AI module is licensed and the base has no active key for it.
+
+    Distinct from `ForbiddenError` on purpose: rights can be granted for another object, a licence
+    cannot — every route answers the same way until the key is installed. Callers treat it as
+    fatal so a model stops re-trying the remaining tools one by one.
+    """
+
+    code = "LICENSE_REQUIRED"
+    http_status = 403
+
+
 class ForbiddenError(MCBPError):
     """The BAS account authenticated, but has no right on the object it asked for.
 
