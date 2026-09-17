@@ -600,10 +600,15 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         changed = [{"field": k, "old": "<mock:old>", "new": str(v)} for k, v in body.items()]
         return {"metadata": kind.lower(), "type": type_, "id": object_id,
                 "changed": changed, "posted": True}
-    if "/ai/v1/object/" in path:  # singular: full data of one object
+    if "ai/v1/object/" in path:  # singular: full data of one object (dict, not a list — §4.10)
         return {"metadata": "catalog", "type": path.split("/")[-2],
-                 "data": [{"Kod": "000000002"}, {"Naimenovanie": "Альфа Трейд, ТОВ"},
-                          {"Pokupatel": "true"}, {"KodPoEDRPOU": "314159265"}]}
+                 "data": {
+                     "Ref": {"Presentation": "Альфа Трейд, ТОВ", "Data": "e3f1d9b6-0002",
+                              "Metadata": "Контрагенты"},
+                     "Code": "000000002", "Description": "Альфа Трейд, ТОВ",
+                     "DeletionMark": False, "IsFolder": False,
+                     "Pokupatel": True, "KodPoEDRPOU": "314159265",
+                 }}
     if "/ai/context" in path:
         return {"accepted": True, "conversation_id": "mock-conv"}
     if "/catalogs/" in path or "/documents/" in path:

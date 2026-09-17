@@ -21,6 +21,19 @@ def _live_client() -> MCBPClient:
     return MCBPClient(ConnectionConfig(base_url="http://test", user="u", password="p", mock=False))
 
 
+async def test_get_object_mock_mode_returns_dict_shape():
+    """The mock must match the real `GET /ai/v1/object/{metadata}/{type}/{id}` shape
+    (.claude/refs/onec-tool-contract.md §4.10): `data` is a flat DICT, not a list of
+    single-key dicts."""
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    result = await client.get_object("Catalogs", "Контрагенты", "e3f1d9b6-0002")
+    assert result["type"] == "Контрагенты"
+    assert isinstance(result["data"], dict)
+    assert result["data"]["Ref"]["Presentation"] == "Альфа Трейд, ТОВ"
+    assert result["data"]["Code"] == "000000002"
+
+
 async def test_patch_object_mock_mode():
     client = MCBPClient(ConnectionConfig(mock=True))
     await client.startup()
