@@ -20,6 +20,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -211,18 +212,87 @@ def _describe_metadata_view(full: dict, tabular_section: str | None, q: str | No
     return view
 
 
+# `metadata` of a single-kind list -> key of the same kind in `list_metadata("all")`.
+_KIND_TO_ALL_KEY = {
+    "catalog": "catalogs",
+    "document": "documents",
+    "informationregister": "informationregisters",
+    "accumulationregister": "accumulationregisters",
+    "enum": "enums",
+    "task": "tasks",
+    "chartofcharacteristictypes": "chartsofcharacteristictypes",
+    "constant": "constants",
+}
+
+
+class MetadataCache:
+    """Cache for the metadata routes, shareable between clients of the SAME base.
+
+    Metadata is configuration structure, not data. On the BAS side `ai_metadata_get` and
+    `ai_document_schema_get` run under `SetPrivilegedMode(True)`, so what they return does
+    not depend on who asks — unlike the data routes, which check `AccessRight("Read", ...)`.
+    A single cache can therefore serve every user of one base: the first login warms it, the
+    rest get hits. Data stays per-user because each client carries its own HTTP Basic auth.
+
+    Sharing one instance across DIFFERENT bases is a caller bug — key your caches by base.
+
+    Concurrent misses of the same path are collapsed into one request (single-flight), so
+    N sessions logging in together still warm the configuration inventory once.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[str, Any] = {}
+        self._hits = 0
+        self._misses = 0
+        # One lock per path. Kept after use: the key space is the set of metadata routes,
+        # the same order of magnitude as `_entries` itself.
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    async def get(self, path: str, fetch: Callable[[str], Awaitable[Any]]) -> Any:
+        if path in self._entries:
+            self._hits += 1
+            log.info("GET %s → cache hit", path.lstrip("/"))
+            return self._entries[path]
+
+        lock = self._locks.get(path)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[path] = lock
+
+        async with lock:
+            # Another caller may have filled it while we waited on the lock.
+            if path in self._entries:
+                self._hits += 1
+                log.info("GET %s → cache hit", path.lstrip("/"))
+                return self._entries[path]
+            self._misses += 1
+            payload = await fetch(path)
+            self._entries[path] = payload
+            return payload
+
+    def stats(self) -> dict:
+        return {"entries": len(self._entries), "hits": self._hits, "misses": self._misses}
+
+
 class MCBPClient:
-    def __init__(self, config: ConnectionConfig):
+    def __init__(self, config: ConnectionConfig, metadata_cache: MetadataCache | None = None):
         self._cfg = config
         self._mock = config.mock
         self._client: httpx.AsyncClient | None = None
         # Metadata is configuration structure, not data: it cannot change while a connection is
         # open (a configuration change needs the base restarted/updated), so the same tree was
-        # being re-fetched on every model turn for nothing. Cache lives on the client instance,
-        # so a re-login builds a new client and therefore a fresh cache — that is the invalidation.
-        self._meta_cache: dict[str, Any] = {}
-        self._meta_hits = 0
-        self._meta_misses = 0
+        # being re-fetched on every model turn for nothing.
+        #
+        # Left alone, the cache lives on this client, so a re-login builds a new client and
+        # therefore a fresh cache — that is the invalidation. Pass `metadata_cache` to share one
+        # across clients of the SAME base (see MetadataCache); invalidating it is then the
+        # caller's job — drop the instance when the base configuration changes.
+        self._meta = metadata_cache if metadata_cache is not None else MetadataCache()
+        # Names this user may READ, per `list_metadata("all")` key — see load_readable_metadata.
+        # None = not loaded: the first list_readable_metadata call loads it once, and a failed
+        # load leaves it None for good — nothing is filtered then.
+        self._readable: dict[str, set[str]] | None = None
+        self._readable_tried = False
 
     async def startup(self) -> None:
         if self._mock:
@@ -479,15 +549,8 @@ class MCBPClient:
 
     # --- Configuration introspection (works for ANY 1C configuration) ---
     async def _cached_get(self, path: str) -> Any:
-        """GET a metadata route through the per-connection cache."""
-        if path in self._meta_cache:
-            self._meta_hits += 1
-            log.info("GET %s → cache hit", path.lstrip("/"))
-            return self._meta_cache[path]
-        self._meta_misses += 1
-        payload = await self._request("GET", path)
-        self._meta_cache[path] = payload
-        return payload
+        """GET a metadata route through the metadata cache (per-client, or shared per base)."""
+        return await self._meta.get(path, lambda p: self._request("GET", p))
 
     async def prefetch_metadata(self) -> int:
         """Warm the cache with the whole-configuration object inventory (one request).
@@ -496,21 +559,63 @@ class MCBPClient:
         ~0.5 s call, while describing all ~1800 objects of a typical configuration would be ~1800.
         Per-object trees stay lazy — cached on first use. Returns the number of cached entries."""
         await self._cached_get("/ai/v1/metadata/all")
-        return len(self._meta_cache)
+        return self._meta.stats()["entries"]
 
     def metadata_cache_stats(self) -> dict:
-        return {"entries": len(self._meta_cache), "hits": self._meta_hits,
-                "misses": self._meta_misses}
+        return self._meta.stats()
 
     async def list_metadata(self, kind: str) -> dict:
         """kind='all' → object lists of every kind; kind='Catalogs'/'Documents'/... → list of one kind."""
         return await self._cached_get(f"/ai/v1/metadata/{kind}")
 
+    async def load_readable_metadata(self) -> int:
+        """Load which objects THIS user has the Read right on (`?access=read`, one request).
+
+        Deliberately outside the metadata cache: the cache is shared by every user of the base,
+        this answer is per user. A base build without `access=read` ignores the parameter and
+        returns everything, which simply hides nothing. Returns the number of readable names."""
+        self._readable_tried = True
+        body = await self._request("GET", "/ai/v1/metadata/all", params={"access": "read"})
+        self._readable = {
+            key: {str(it.get("name")) for it in items if isinstance(it, dict)}
+            for key, items in (body or {}).items()
+            if isinstance(items, list)
+        }
+        return sum(len(names) for names in self._readable.values())
+
+    async def list_readable_metadata(self, kind: str) -> dict:
+        """`list_metadata` narrowed to what this user may read — the view for the MODEL, so it
+        does not propose objects that answer 403. Masking must keep using the full
+        `list_metadata`: it classifies referenced types, readable or not.
+
+        Returns copies — the underlying lists belong to the cache shared across users. Rights
+        are loaded on first use unless the host already did it (the backend does, at login)."""
+        if self._readable is None and not self._readable_tried:
+            try:
+                await self.load_readable_metadata()
+            except Exception as e:  # noqa: BLE001 — no rights answer means an unfiltered view
+                log.warning("readable metadata unavailable, list stays unfiltered: %s", e)
+        data = await self.list_metadata(kind)
+        readable = self._readable
+        if readable is None or not isinstance(data, dict):
+            return data
+        if isinstance(data.get("items"), list):
+            names = readable.get(_KIND_TO_ALL_KEY.get(str(data.get("metadata")), ""))
+            if names is None:
+                return data
+            items = [it for it in data["items"] if it.get("name") in names]
+            return {**data, "items": items, "count": len(items)}
+        return {
+            key: [it for it in value if it.get("name") in readable[key]]
+            if isinstance(value, list) and key in readable else value
+            for key, value in data.items()
+        }
+
     async def describe_metadata(self, kind: str, type_: str,
                                 tabular_section: str | None = None,
                                 q: str | None = None) -> dict:
         """Attribute tree of one metadata object. The full tree (all tabular sections with
-        their nested attributes) is fetched once and kept in `_meta_cache` regardless of
+        their nested attributes) is fetched once and kept in the metadata cache regardless of
         `tabular_section`/`q` — only the VIEW returned to the caller changes:
 
         - `tabular_section` omitted (default): tabular sections are summarized to

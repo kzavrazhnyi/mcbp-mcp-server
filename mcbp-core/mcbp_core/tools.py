@@ -106,7 +106,7 @@ async def _filter_catalog(c: MCBPClient, a: dict) -> Any:
 
 
 async def _list_metadata(c: MCBPClient, a: dict) -> Any:
-    return await c.list_metadata(kind=a["metadata"])
+    return await c.list_readable_metadata(kind=a["metadata"])
 
 
 async def _describe_metadata(c: MCBPClient, a: dict) -> Any:

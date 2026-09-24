@@ -7,4 +7,4 @@ which the 10 read-only ones are returned by default. `include_write=True` adds `
 `save_context` and `patch_object`; `surface=` narrows the list to one front-end.
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"

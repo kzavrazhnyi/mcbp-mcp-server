@@ -46,6 +46,9 @@ class RecordingClient:
     async def list_metadata(self, kind):
         return self._record("list_metadata", kind=kind)
 
+    async def list_readable_metadata(self, kind):
+        return self._record("list_readable_metadata", kind=kind)
+
     async def describe_metadata(self, kind, type_, tabular_section=None, q=None):
         return self._record("describe_metadata", kind=kind, type_=type_,
                              tabular_section=tabular_section, q=q)
@@ -144,7 +147,8 @@ async def test_filter_catalog_defaults(client):
 async def test_list_metadata_maps_metadata_key(client):
     await TOOLS["list_metadata"].executor(client, {"metadata": "Catalogs"})
     method, kw = client.calls[0]
-    assert method == "list_metadata"
+    # the model's view: narrowed to what the user may read (unfiltered when rights are not loaded)
+    assert method == "list_readable_metadata"
     assert kw == {"kind": "Catalogs"}
 
 
