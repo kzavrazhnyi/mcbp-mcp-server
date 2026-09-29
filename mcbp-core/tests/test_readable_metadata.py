@@ -112,6 +112,36 @@ async def test_rights_are_loaded_once_on_first_use_when_the_host_did_not_load_th
     assert readable.call_count == 1
 
 
+async def test_set_readable_metadata_installs_a_map_without_a_request():
+    """A host app's own cache (e.g. per base+user, across logins) restores rights on a fresh
+    client with no `?access=read` round trip."""
+    with respx.mock(assert_all_called=False) as mock:
+        readable = _routes(mock)
+        client = _client()
+        await client.startup()
+        try:
+            assert client.get_readable_metadata() is None
+            client.set_readable_metadata({"catalogs": {"Валюты"}, "documents": set(), "enums": {"ВидыОплат"}})
+            everything = await client.list_readable_metadata("all")
+        finally:
+            await client.shutdown()
+    assert readable.call_count == 0, "встановлене ззовні не мало піти в мережу"
+    assert everything["catalogs"] == [{"name": "Валюты"}]
+
+
+async def test_get_readable_metadata_returns_the_loaded_map():
+    with respx.mock(assert_all_called=False) as mock:
+        _routes(mock)
+        client = _client()
+        await client.startup()
+        try:
+            await client.load_readable_metadata()
+            snapshot = client.get_readable_metadata()
+        finally:
+            await client.shutdown()
+    assert snapshot == {"catalogs": {"Валюты"}, "documents": set(), "enums": {"ВидыОплат"}}
+
+
 async def test_failed_rights_load_leaves_the_list_unfiltered_and_is_not_retried():
     with respx.mock(assert_all_called=False) as mock:
         readable = mock.get(f"{BASE}/ai/v1/metadata/all", params={"access": "read"}).mock(

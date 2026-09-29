@@ -583,6 +583,20 @@ class MCBPClient:
         }
         return sum(len(names) for names in self._readable.values())
 
+    def get_readable_metadata(self) -> dict[str, set[str]] | None:
+        """Snapshot of the loaded read-rights map, or None if never loaded on this client.
+
+        For a host app that keeps its own cache of this answer (e.g. per base+user, surviving
+        past this client's lifetime) to read out after `load_readable_metadata` and later
+        restore on a fresh client via `set_readable_metadata` — skipping the request."""
+        return self._readable
+
+    def set_readable_metadata(self, readable: dict[str, set[str]]) -> None:
+        """Install a read-rights map obtained elsewhere (e.g. the host's own cache) without an
+        HTTP round trip. Marks it as loaded, so `list_readable_metadata` will not fetch it."""
+        self._readable = readable
+        self._readable_tried = True
+
     async def list_readable_metadata(self, kind: str) -> dict:
         """`list_metadata` narrowed to what this user may read — the view for the MODEL, so it
         does not propose objects that answer 403. Masking must keep using the full
