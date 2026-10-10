@@ -56,8 +56,19 @@ sudo mkdir -p /opt/mcbp-mcp && sudo chown mcbp:mcbp /opt/mcbp-mcp
 sudo -u mcbp python3.11 -m venv /opt/mcbp-mcp/.venv
 ```
 
-The distribution is named `mcbp` and is published on **TestPyPI** (current: `mcbp 0.2.4`,
+The distribution is named `mcbp` and is published on **PyPI** (current: `mcbp 0.2.4`,
 `mcbp-core 0.1.6`).
+
+```bash
+sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install "mcbp[http]==0.2.4" "mcbp-core==0.1.6"
+```
+
+- **Pin both versions.** A bare `mcbp[http]` resolves to whatever is newest, which is not always
+  what was tested, and an upgrade of `mcbp` alone leaves an older `mcbp-core` in place whenever it
+  still satisfies the range. 0.1.0 predates the HTTP transport and gives a stdio-only server.
+
+**Checking a release before it reaches PyPI — TestPyPI.** Every release goes to TestPyPI first.
+To install that candidate, `install-ubuntu.sh --testpypi`, or by hand:
 
 ```bash
 sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install \
@@ -69,18 +80,13 @@ sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install \
 - **`--extra-index-url https://pypi.org/simple/` is mandatory.** The runtime dependencies —
   httpx, mcp, starlette, uvicorn — are not on TestPyPI, so resolution fails without it. That is
   a property of TestPyPI, not a defect of the package.
-- **Pin both versions.** A bare `mcbp[http]` resolves to whatever is newest on TestPyPI, which is
-  not always what was tested, and an upgrade of `mcbp` alone leaves an older `mcbp-core` in place
-  whenever it still satisfies the range. 0.1.0 predates the HTTP transport and gives a
-  stdio-only server.
 - **Dependency confusion.** With `--extra-index-url` pip may take httpx or starlette from
-  TestPyPI if someone uploaded a higher version there. `install-ubuntu.sh` avoids it: it downloads
-  only our two wheels from TestPyPI and resolves everything else from PyPI.
-- **TestPyPI is a sandbox.** It promises no durability and its packages can be pruned. Fine for
-  the internal stage; publishing to the production PyPI is a stage-2 item, before the endpoint
-  faces a public IP.
+  TestPyPI if someone uploaded a higher version there. `install-ubuntu.sh --testpypi` avoids it:
+  it downloads only our two wheels from TestPyPI and resolves everything else from PyPI.
+- **TestPyPI is a sandbox.** It promises no durability and its packages can be pruned — use it to
+  check a release, not to run a deployment.
 
-**Fallback — install from the checkout.** For a machine with no access to TestPyPI, or to test a
+**Fallback — install from the checkout.** For a machine with no access to PyPI, or to test a
 change that is not released yet:
 
 ```bash
@@ -252,8 +258,8 @@ What changes. Nothing is rebuilt.
    account in the caller's `Authorization` header decides what they may then do. That header is
    taken: nginx must forward it untouched and must not run `auth_basic` on these locations.
 5. **A publicly valid certificate** if hosted connector surfaces are to be clients (section 0).
-6. **Publish `mcbp` to the production PyPI** and reinstall from it. TestPyPI makes no durability
-   promise; a public deployment must not depend on a sandbox index.
+6. **Install from the production PyPI**, not TestPyPI (the default of `install-ubuntu.sh`).
+   TestPyPI makes no durability promise; a public deployment must not depend on a sandbox index.
 
 ## Troubleshooting
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the mcbp-ai MCP server as a systemd service on Ubuntu (tested on 20.04).
 #
-#   sudo ./install-ubuntu.sh <instance> [--port 8011] [--bind 127.0.0.1] [--pypi] [--wheels DIR]
+#   sudo ./install-ubuntu.sh <instance> [--port 8011] [--bind 127.0.0.1] [--testpypi] [--wheels DIR]
 #
 # <instance> names the BAS base: it becomes /etc/mcbp-mcp/<instance>.env and the unit
 # mcbp-mcp@<instance>. Re-running is safe: the venv is refreshed, an existing env file and token
@@ -14,6 +14,9 @@
 # --bind 127.0.0.1 (default) is for the internal-HTTPS layout: the existing web server of the
 # base (Apache or nginx) terminates TLS and proxies /mcp to this port — see apache-mcp.conf.
 # --bind 0.0.0.0 lets clients dial the port directly over plain http.
+#
+# Packages come from PyPI. --testpypi takes our two wheels from TestPyPI instead (a release being
+# checked before it is published); --wheels DIR installs wheels already on disk (offline).
 set -euo pipefail
 
 MCBP_VERSION="0.2.4"
@@ -28,17 +31,18 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 INSTANCE="${1:-}"
 PORT="8011"
 BIND="127.0.0.1"
-USE_PYPI=0
+USE_TESTPYPI=0
 WHEELS=""
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 [ -n "$INSTANCE" ] && [ "${INSTANCE#-}" = "$INSTANCE" ] || usage
 shift
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="$2"; shift 2 ;;
     --bind) BIND="$2"; shift 2 ;;
-    --pypi) USE_PYPI=1; shift ;;
+    --testpypi) USE_TESTPYPI=1; shift ;;
+    --pypi) USE_TESTPYPI=0; shift ;;
     --wheels) WHEELS="$(cd "$2" && pwd)"; shift 2 ;;
     *) usage ;;
   esac
@@ -72,7 +76,7 @@ step "mcbp $MCBP_VERSION + mcbp-core $CORE_VERSION"
 # Our two packages come from one place and everything else from PyPI — never mixed in one
 # resolution. Letting TestPyPI answer for httpx or starlette would install whatever anyone
 # uploaded there under that name.
-if [ "$USE_PYPI" -eq 1 ]; then
+if [ "$USE_TESTPYPI" -eq 0 ] && [ -z "$WHEELS" ]; then
   as_svc uv pip install --python "$PY" "mcbp[http]==$MCBP_VERSION" "mcbp-core==$CORE_VERSION"
 else
   if [ -z "$WHEELS" ]; then
