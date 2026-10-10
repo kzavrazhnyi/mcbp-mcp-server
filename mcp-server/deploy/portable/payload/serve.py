@@ -80,7 +80,7 @@ def main() -> int:
     except ImportError as e:
         log.error(
             "пакет mcbp[http] не встановлений у вбудованому Python (%s). "
-            "Запустіть update.cmd, щоб доставити його з TestPyPI.", e,
+            "Запустіть update.cmd, щоб доставити його з PyPI.", e,
         )
         return 1
 

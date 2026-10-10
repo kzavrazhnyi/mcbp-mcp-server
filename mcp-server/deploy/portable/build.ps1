@@ -4,7 +4,8 @@
 
 .DESCRIPTION
     Тягне embeddable-дистрибутив Python з python.org, ставить у нього pip і пакет
-    `mcbp[http]` з TestPyPI, потім розкладає поруч лаунчер і скрипти супроводу.
+    `mcbp[http]` з PyPI, потім розкладає поруч лаунчер і скрипти супроводу.
+    -FromTestPypi бере наші два пакети з TestPyPI — щоб зібрати поставку з кандидата в реліз.
     Результат — самодостатня тека, яку копіюють на іншу Windows-машину.
 
     Типова тека виводу лежить у tmp/ (у .gitignore), тому сама поставка в репозиторій
@@ -19,8 +20,10 @@ param(
     [string] $OutDir = "C:\PYTHON\mcbp\tmp\mcbp-mcp-portable",
     [string] $PythonVersion = "3.11.9",
     [string] $McbpVersion = "0.2.4",
+    [string] $McbpCoreVersion = "0.1.6",
     [string] $CacheDir = (Join-Path $env:TEMP "mcbp-portable-build"),
-    [switch] $Force
+    [switch] $Force,
+    [switch] $FromTestPypi
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,9 +80,15 @@ Write-Host "Встановлюю pip ..."
 if ($LASTEXITCODE -ne 0) { throw "get-pip.py завершився з кодом $LASTEXITCODE" }
 
 # --- 3. Пакет mcbp[http] ------------------------------------------------------------------
-Write-Host "Встановлюю mcbp[http]==$McbpVersion з TestPyPI ..."
-& $python -m pip install --no-warn-script-location `
-    --index-url $testPypi --extra-index-url $pypi "mcbp[http]==$McbpVersion"
+if ($FromTestPypi) {
+    Write-Host "Встановлюю mcbp[http]==$McbpVersion і mcbp-core==$McbpCoreVersion з TestPyPI ..."
+    & $python -m pip install --no-warn-script-location `
+        --index-url $testPypi --extra-index-url $pypi "mcbp[http]==$McbpVersion" "mcbp-core==$McbpCoreVersion"
+} else {
+    Write-Host "Встановлюю mcbp[http]==$McbpVersion і mcbp-core==$McbpCoreVersion з PyPI ..."
+    & $python -m pip install --no-warn-script-location `
+        --index-url $pypi "mcbp[http]==$McbpVersion" "mcbp-core==$McbpCoreVersion"
+}
 if ($LASTEXITCODE -ne 0) { throw "pip install mcbp[http] завершився з кодом $LASTEXITCODE" }
 
 # cryptography потрібна лише make-cert.ps1 для конвертації PFX -> PEM. Ставимо тут, щоб
