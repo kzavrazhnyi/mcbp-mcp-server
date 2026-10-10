@@ -32,29 +32,50 @@ The rule is **where the MCP client process runs**, not which model is behind it.
 
 ## 1. Install
 
+**Quick path (Ubuntu, verified on 20.04): `install-ubuntu.sh`.** Sections 1–3 in one command —
+service user, Python 3.11, venv with pinned packages, env file, token registry, systemd unit:
+
+```bash
+sudo ./install-ubuntu.sh partner              # instance name = base; --port 8011, --bind 127.0.0.1
+sudo -e /etc/mcbp-mcp/partner.env             # ONEC_BASE_URL, ONEC_USER, ONEC_PASSWORD
+sudo -e /etc/mcbp-mcp/partner.tokens.toml     # one [[users]] entry per person
+sudo systemctl start mcbp-mcp@partner
+```
+
+Re-running it updates the packages and keeps the env file and the token registry. It exists
+because Ubuntu 20.04 ships Python 3.8 and the package needs 3.11+: the script installs a
+standalone 3.11 with `uv` under `/opt/mcbp-mcp/python` and leaves the system Python alone.
+It writes `MCP_REQUIRE_AUTH=1` and strips CR from the env template — a Windows checkout gives it
+CRLF, and `MCP_HTTP_PATH=/mcp\r` answers every request with 404 while `/healthz` stays `ok`.
+
+The manual steps below are what the script does.
+
 ```bash
 sudo useradd --system --home /opt/mcbp-mcp --shell /usr/sbin/nologin mcbp
 sudo mkdir -p /opt/mcbp-mcp && sudo chown mcbp:mcbp /opt/mcbp-mcp
 sudo -u mcbp python3.11 -m venv /opt/mcbp-mcp/.venv
 ```
 
-The distribution is named `mcbp` and is published on **TestPyPI**. Release `0.2.0` must be
-uploaded there before this command can work — `mcbp-core` first, then `mcbp`; a published version
-is immutable, which is why the HTTP transport ships as a new version rather than a re-upload.
+The distribution is named `mcbp` and is published on **TestPyPI** (current: `mcbp 0.2.4`,
+`mcbp-core 0.1.6`).
 
 ```bash
 sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install \
   --index-url https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  "mcbp[http]==0.2.0"
+  "mcbp[http]==0.2.4" "mcbp-core==0.1.6"
 ```
 
 - **`--extra-index-url https://pypi.org/simple/` is mandatory.** The runtime dependencies —
   httpx, mcp, starlette, uvicorn — are not on TestPyPI, so resolution fails without it. That is
   a property of TestPyPI, not a defect of the package.
-- **Pin the version.** A bare `mcbp[http]` resolves to whatever is newest on TestPyPI, which is
-  not always what was tested. `0.2.0` is the first release carrying the `mcbp-http` entry point
-  and the `http` extra; 0.1.0 predates the HTTP transport and gives a stdio-only server.
+- **Pin both versions.** A bare `mcbp[http]` resolves to whatever is newest on TestPyPI, which is
+  not always what was tested, and an upgrade of `mcbp` alone leaves an older `mcbp-core` in place
+  whenever it still satisfies the range. 0.1.0 predates the HTTP transport and gives a
+  stdio-only server.
+- **Dependency confusion.** With `--extra-index-url` pip may take httpx or starlette from
+  TestPyPI if someone uploaded a higher version there. `install-ubuntu.sh` avoids it: it downloads
+  only our two wheels from TestPyPI and resolves everything else from PyPI.
 - **TestPyPI is a sandbox.** It promises no durability and its packages can be pruned. Fine for
   the internal stage; publishing to the production PyPI is a stage-2 item, before the endpoint
   faces a public IP.
@@ -168,6 +189,24 @@ encryption) — `~/.claude.json` for Claude Code. This differs from the web back
 password is typed into a login form and lives only in that session's memory. Treat the config
 file accordingly, and prefer a per-person BAS account over a shared one.
 
+## 5a. Internal HTTPS through the publication's web server
+
+Plain `http` over a VPN works — Claude Code and Codex both connect with a Bearer token (Codex
+verified against an Ubuntu 20.04 install, 08.10.2026) — but the token and the data travel in clear
+text between the VPN gateway and the server. When the BAS publication already runs HTTPS (often
+with a self-signed certificate), reuse it instead of opening a new port:
+
+1. Install with `--bind 127.0.0.1` (the default): the instance is reachable only on loopback.
+2. Add the `<Location "/mcp">` block from `apache-mcp.conf` to the publication's HTTPS virtual
+   host (for nginx, the `location` block from `nginx-mcp.conf`).
+3. Clients use `https://<server>/mcp` and trust that certificate once on their machine. The
+   certificate must carry `subjectAltName` for the address they dial.
+
+For the instance's own connection to BAS on the same server, prefer
+`ONEC_BASE_URL=http://127.0.0.1/<base>/hs/mcbp_ai` when the web server also listens on port 80
+locally: the traffic never leaves the machine. Over HTTPS with a self-signed certificate, point
+`SSL_CERT_FILE` in the env file at that certificate rather than setting `ONEC_VERIFY_SSL=0`.
+
 ## Security property of stage 1 — read this before opening the port
 
 **The endpoint itself authenticates nobody.** It accepts every connection; what it does NOT do
@@ -232,5 +271,6 @@ What changes. Nothing is rebuilt.
 | Every tool 403 `KEY_MISMATCH` while `health` works | Infobase key does not match the publication — a BAS-side issue; startup logs a warning for it. |
 | `404` on every tool, `health` fine | `ONEC_BASE_URL` still carries the `/ai/v1` suffix. |
 | `No matching distribution found for httpx` (or mcp/starlette/uvicorn) | The TestPyPI install is missing `--extra-index-url https://pypi.org/simple/`. |
-| `mcbp-http: command not found` | Version 0.1.0 got installed — it predates the HTTP transport. Pin `==0.2.0`. |
+| `mcbp-http: command not found` | Version 0.1.0 got installed — it predates the HTTP transport. Pin `==0.2.4`. |
+| Every `/mcp` request is `404 Not Found` (plain text), `/healthz` is `ok`, even without a token | The env file has CRLF line endings, so `MCP_HTTP_PATH` is `/mcp\r`. `sed -i 's/\r$//' /etc/mcbp-mcp/<base>.env` and restart. |
 | Edits to the checkout have no effect | Fallback install only: `mcbp-core` went in without `-e`. |
