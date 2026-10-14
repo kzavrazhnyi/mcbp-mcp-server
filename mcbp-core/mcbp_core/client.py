@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import itertools
 import json
 import logging
+import re
 import time
+import uuid
 from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode
 
 import httpx
 
@@ -125,19 +128,61 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + f"...<truncated, {len(text)} chars total>"
 
 
-def _kw_brief(kw: dict) -> str:
+def _mask_client(value: Any) -> str:
+    text = str(value)
+    return text[:4] + "…" if len(text) > 4 else "…"
+
+
+class _RedactClientKey(logging.Filter):
+    """httpx logs every request URL at INFO — `?client=<device key>` included. Masks that value
+    in its records, the same way `_kw_brief` does for ours."""
+
+    _PATTERN = re.compile(r"([?&]client=)([^&\s\"]+)")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if "client=" in message:
+            record.msg = self._PATTERN.sub(
+                lambda m: m.group(1) + _mask_client(unquote(m.group(2))), message
+            )
+            record.args = None
+        return True
+
+
+logging.getLogger("httpx").addFilter(_RedactClientKey())
+
+
+def _value_shape(value: Any) -> str:
+    if isinstance(value, (str, list, dict)):
+        return f"{type(value).__name__}({len(value)})"
+    return type(value).__name__
+
+
+def _kw_brief(kw: dict, chat: bool = False) -> str:
     """Describes a request's parameters for the log. Request bodies to MCBP_AI are small and
     carry no secrets, so a dict body is logged as the actual JSON (truncated), not just its
     keys — the value itself is often the reason for a rejection (e.g. a composite reference
-    field missing "TypeName:")."""
+    field missing "TypeName:").
+
+    Exception: chat archive routes (`chat=True`). Their bodies are the user's own message texts,
+    titles and summaries, and `params["client"]` is the device key — the only pass to a chat
+    when the archive is split per device. There the log gets body keys with value lengths only,
+    and the `client` value is masked down to its first 4 characters."""
     parts = []
-    if kw.get("params"):
-        parts.append(f"params={kw['params']}")
+    params = kw.get("params")
+    if params:
+        if chat and "client" in params:
+            params = {**params, "client": _mask_client(params["client"])}
+        parts.append(f"params={params}")
     body = kw.get("json")
     if body is not None:
         if isinstance(body, dict):
-            body_str = _truncate(json.dumps(body, ensure_ascii=False), _LOG_BODY_LIMIT)
-            parts.append(f"body={body_str}")
+            if chat:
+                shape = ", ".join(f"{k}: {_value_shape(v)}" for k, v in body.items())
+                parts.append(f"body_keys={{{shape}}}")
+            else:
+                body_str = _truncate(json.dumps(body, ensure_ascii=False), _LOG_BODY_LIMIT)
+                parts.append(f"body={body_str}")
         else:
             parts.append(f"body_type={type(body).__name__}")
     return " ".join(parts)
@@ -314,9 +359,12 @@ class MCBPClient:
 
     async def _request(self, method: str, path: str, **kw) -> Any:
         path = path.lstrip("/")  # httpx base_url requires relative paths
-        brief = _kw_brief(kw)
+        is_chat = path.startswith("ai/v1/chats")
+        brief = _kw_brief(kw, chat=is_chat)
         if self._mock:
             log.info("[mock] %s %s %s", method, path, brief)
+            if is_chat:
+                return _mock_chats(self._cfg.user, method, path, kw)
             return _mock_response(method, path, kw)
         assert self._client is not None, "MCBPClient.startup() not called"
 
@@ -324,8 +372,10 @@ class MCBPClient:
         # filter value containing a space matched nothing at all, with no error to notice. Encode
         # the query ourselves (space -> %20) instead of handing `params` to httpx.
         params = kw.pop("params", None)
+        bare_path = path
         if params:
             path = f"{path}?{urlencode(params, quote_via=quote)}"
+        log_path = bare_path if is_chat else path
 
         # Up to _MAX_RETRIES retries on 503 / ConnectError, GET and PATCH only (see
         # _RETRYABLE_METHODS above). Backoff grows with each attempt so a flapping upstream
@@ -339,24 +389,24 @@ class MCBPClient:
                 if method in _RETRYABLE_METHODS and attempt < _MAX_RETRIES:
                     log.warning(
                         "%s %s %s ✗ connect error, retrying (%d/%d): %s",
-                        method, path, brief, attempt + 1, _MAX_RETRIES, e,
+                        method, log_path, brief, attempt + 1, _MAX_RETRIES, e,
                     )
                     await asyncio.sleep(0.3 * (attempt + 1))
                     attempt += 1
                     continue
-                log.warning("%s %s %s ✗ transport error: %s", method, path, brief, e)
+                log.warning("%s %s %s ✗ transport error: %s", method, log_path, brief, e)
                 raise UpstreamError(f"transport error: {e}") from e
             except httpx.HTTPError as e:
-                log.warning("%s %s %s ✗ transport error: %s", method, path, brief, e)
+                log.warning("%s %s %s ✗ transport error: %s", method, log_path, brief, e)
                 raise UpstreamError(f"transport error: {e}") from e
 
             elapsed_ms = (time.monotonic() - start) * 1000
-            log.info("%s %s %s → %s (%.0f ms)", method, path, brief, resp.status_code, elapsed_ms)
+            log.info("%s %s %s → %s (%.0f ms)", method, log_path, brief, resp.status_code, elapsed_ms)
 
             if resp.status_code == 503 and method in _RETRYABLE_METHODS and attempt < _MAX_RETRIES:
                 log.warning(
                     "%s %s %s ✗ 503, retrying (%d/%d)",
-                    method, path, brief, attempt + 1, _MAX_RETRIES,
+                    method, log_path, brief, attempt + 1, _MAX_RETRIES,
                 )
                 await asyncio.sleep(0.3 * (attempt + 1))
                 attempt += 1
@@ -368,7 +418,7 @@ class MCBPClient:
             body_note = "" if typed is not None else " (body is not the {\"error\":{...}} envelope)"
             log.warning(
                 "%s %s → %s%s: %s",
-                method, path, resp.status_code, body_note,
+                method, log_path, resp.status_code, body_note,
                 _truncate(resp.text, _LOG_RESPONSE_LIMIT),
             )
             if typed is not None:
@@ -376,7 +426,7 @@ class MCBPClient:
             # Body doesn't match the {"error":{"code",...}} envelope — fall back to the
             # status-code-only classification (unchanged from before).
             if resp.status_code == 404:
-                raise NotFoundError(path)
+                raise NotFoundError(bare_path)
             if resp.status_code in (401, 403):
                 raise AuthError(f"BAS rejected credentials ({resp.status_code}): {resp.text[:200]}")
             raise UpstreamError(f"BAS returned {resp.status_code}: {resp.text[:300]}")
@@ -547,6 +597,76 @@ class MCBPClient:
     async def push_ai_context(self, body: dict) -> dict:
         return await self._request("POST", "/ai/v1/ai/context", json=body)
 
+    # --- Chat archive: service routes for the web app, NOT model tools (not in the registry).
+    # Every method returns the whole response body, like its neighbours: {"data": ...}. The owner
+    # is the BAS user plus the optional `client` key; None/empty means the key is not sent.
+    @staticmethod
+    def _chat_params(client_key: str | None, **extra: Any) -> dict[str, Any] | None:
+        params = {k: v for k, v in extra.items() if v is not None}
+        if client_key:
+            params["client"] = client_key
+        return params or None
+
+    @staticmethod
+    def _chat_path(chat_id: str, tail: str = "") -> str:
+        return f"/ai/v1/chats/{quote(chat_id, safe='')}{tail}"
+
+    async def list_chats(self, client_key: str | None = None) -> dict:
+        """{"data": [{id, title, pinned, summary, updated}, ...]} — pinned first, then newest."""
+        return await self._request(
+            "GET", "/ai/v1/chats", params=self._chat_params(client_key),
+        )
+
+    async def create_chat(self, title: str | None = None, summary: str | None = None,
+                          pinned: bool | None = None, client_key: str | None = None) -> dict:
+        """{"data": {id, title, pinned, summary, updated}} (HTTP 201)."""
+        body = {k: v for k, v in
+                {"title": title, "summary": summary, "pinned": pinned}.items() if v is not None}
+        return await self._request(
+            "POST", "/ai/v1/chats", params=self._chat_params(client_key), json=body,
+        )
+
+    async def get_chat(self, chat_id: str, limit: int | None = None,
+                       client_key: str | None = None) -> dict:
+        """{"data": {id, title, pinned, summary, updated, "messages": [{n, role, text, date}]}} —
+        the last `limit` messages (BAS default 200, 1..1000), oldest first."""
+        return await self._request(
+            "GET", self._chat_path(chat_id),
+            params=self._chat_params(client_key, limit=limit),
+        )
+
+    async def patch_chat(self, chat_id: str, *, title: str | None = None,
+                         summary: str | None = None, pinned: bool | None = None,
+                         client_key: str | None = None) -> dict:
+        """{"data": {id, title, pinned, summary, updated}}. Only the passed fields are sent."""
+        body = {k: v for k, v in
+                {"title": title, "summary": summary, "pinned": pinned}.items() if v is not None}
+        return await self._request(
+            "PATCH", self._chat_path(chat_id), params=self._chat_params(client_key), json=body,
+        )
+
+    async def delete_chat(self, chat_id: str, client_key: str | None = None) -> dict:
+        """{"data": {"id": ..., "deleted": true}}."""
+        return await self._request(
+            "DELETE", self._chat_path(chat_id), params=self._chat_params(client_key),
+        )
+
+    async def add_chat_messages(self, chat_id: str, messages: list[dict], *,
+                                title: str | None = None, summary: str | None = None,
+                                client_key: str | None = None) -> dict:
+        """Appends [{"role": "user"|"assistant"|"note", "text": str}, ...]. Returns
+        {"data": {id, title, pinned, summary, updated, "added": int, "last_number": int}}
+        (HTTP 201). POST is never retried, so a transport failure may leave the write unknown."""
+        body: dict[str, Any] = {"messages": messages}
+        if title is not None:
+            body["title"] = title
+        if summary is not None:
+            body["summary"] = summary
+        return await self._request(
+            "POST", self._chat_path(chat_id, "/messages"),
+            params=self._chat_params(client_key), json=body,
+        )
+
     # --- Configuration introspection (works for ANY 1C configuration) ---
     async def _cached_get(self, path: str) -> Any:
         """GET a metadata route through the metadata cache (per-client, or shared per base)."""
@@ -705,6 +825,82 @@ def _mock_aggregates(kw: dict) -> dict | None:
         return {"aggregates": [dict(row, group="<mock-group-1>"),
                                 dict(row, group="<mock-group-2>")], "groupby": groupby}
     return {"aggregates": [row], "groupby": None}
+
+
+# In-memory chat archive for mock mode. Module-level so every mock client of one process sees the
+# same archive (the backend builds a client per session). Owner = (BAS user, `client` key): a
+# foreign owner gets an empty list / NotFoundError, exactly like BAS.
+_MOCK_CHATS: dict[tuple[str, str], dict[str, dict]] = {}
+
+
+def reset_mock_chats() -> None:
+    _MOCK_CHATS.clear()
+
+
+_MOCK_ROLES = ("user", "assistant", "note")
+_MOCK_SEQ = itertools.count(1)
+
+
+def _mock_now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _chat_head(chat: dict) -> dict:
+    return {k: chat[k] for k in ("id", "title", "pinned", "summary", "updated")}
+
+
+def _mock_chats(user: str, method: str, path: str, kw: dict) -> dict:
+    owner = (user, str((kw.get("params") or {}).get("client") or ""))
+    chats = _MOCK_CHATS.setdefault(owner, {})
+    body = kw.get("json") or {}
+    parts = [p for p in path.split("?", 1)[0].split("/") if p][3:]  # after ai/v1/chats
+    if not parts:
+        if method == "GET":
+            rows = sorted(chats.values(), key=lambda c: (c["updated"], c["seq"]), reverse=True)
+            rows.sort(key=lambda c: not c["pinned"])
+            return {"data": [_chat_head(c) for c in rows]}
+        chat = {"id": str(uuid.uuid4()), "title": body.get("title") or "",
+                "pinned": bool(body.get("pinned", False)), "summary": body.get("summary") or "",
+                "updated": _mock_now(), "messages": [], "seq": next(_MOCK_SEQ)}
+        chats[chat["id"]] = chat
+        return {"data": _chat_head(chat)}
+    chat = chats.get(parts[0])
+    if chat is None:
+        raise NotFoundError(f"chat {parts[0]} not found")
+    if len(parts) == 2 and parts[1] == "messages" and method == "POST":
+        added = body.get("messages")
+        if not isinstance(added, list) or not added:
+            raise ParameterError("messages must be a non-empty array")
+        for m in added:
+            role = m.get("role") if isinstance(m, dict) else None
+            if role not in _MOCK_ROLES:
+                raise ParameterError(f"role must be one of {list(_MOCK_ROLES)}, got {role!r}")
+        for m in added:
+            chat["messages"].append({"n": len(chat["messages"]) + 1, "role": m["role"],
+                                     "text": m.get("text") or "", "date": _mock_now()})
+        for key in ("title", "summary"):
+            if key in body:
+                chat[key] = body[key]
+        chat["updated"] = _mock_now()
+        return {"data": {**_chat_head(chat), "added": len(added),
+                         "last_number": len(chat["messages"])}}
+    if method == "DELETE":
+        del chats[parts[0]]
+        return {"data": {"id": parts[0], "deleted": True}}
+    if method == "PATCH":
+        for key in ("title", "summary", "pinned"):
+            if key in body:
+                chat[key] = body[key]
+        chat["updated"] = _mock_now()
+        return {"data": _chat_head(chat)}
+    raw_limit = (kw.get("params") or {}).get("limit")
+    try:
+        limit = 200 if raw_limit is None else int(raw_limit)
+    except (TypeError, ValueError):
+        raise ParameterError(f"limit must be an integer 1..1000, got {raw_limit!r}") from None
+    if not 1 <= limit <= 1000:
+        raise ParameterError(f"limit must be an integer 1..1000, got {limit}")
+    return {"data": {**_chat_head(chat), "messages": chat["messages"][-limit:]}}
 
 
 def _mock_response(method: str, path: str, kw: dict) -> Any:
