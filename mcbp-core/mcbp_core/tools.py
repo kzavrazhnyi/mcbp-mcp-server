@@ -157,7 +157,8 @@ TOOLS: dict[str, ToolSpec] = {
         "цього набору (не звужує вибірку); невідоме ім'я поля потрапляє в `unknown_fields` "
         "відповіді, а не в помилку. Порожнє поле у списку НЕ означає, що реквізит порожній у "
         "базі — щоб побачити реальні значення реквізитів одного запису, виклич get_object з "
-        "його Ref.",
+        "його Ref. Для підрахунку («скільки») НЕ рахуй рядки: використовуй filter_catalog з "
+        "agg=[\"count\"] і exclude_groups=true.",
         _params(
             {"type": {"type": "string", "description": "Тип довідника, напр. Контрагенты, Номенклатура"},
              "q": {"type": "string", "description": "Текст пошуку за назвою/кодом"},
@@ -175,7 +176,9 @@ TOOLS: dict[str, ToolSpec] = {
             "named attributes to that set (it never narrows the selection); an unknown field "
             "name lands in the response's `unknown_fields`, not in an error. An empty field in "
             "a list row does NOT mean the attribute is empty in the base — to see the real "
-            "attribute values of one record, call get_object with its Ref."
+            "attribute values of one record, call get_object with its Ref. For counting ('how "
+            "many') do NOT count rows: use filter_catalog with agg=[\"count\"] and "
+            "exclude_groups=true."
         )),
     "get_documents": ToolSpec(
         "get_documents",
@@ -397,7 +400,10 @@ TOOLS: dict[str, ToolSpec] = {
         "«скільки»/«на яку суму»/«середнє»/«максимум»/«мінімум» — використовуй `agg` ЗАМІСТЬ "
         "вивантаження рядків і ручного підрахунку: напр. agg=[\"count\"] або "
         "agg=[\"sum:Сумма\"]. Відповідь тоді має форму {\"aggregates\":[...]} замість "
-        "{\"data\":[...]}.",
+        "{\"data\":[...]}. Для «скільки елементів довідника» став agg=[\"count\"] разом з "
+        "exclude_groups=true (групи — папки, не елементи); якщо довідник ієрархічний, групи "
+        "назви окремо: другий виклик agg=[\"count\"] без exclude_groups, різниця — кількість "
+        "груп (напр. «9 контрагентів, ще 3 групи»).",
         _params(
             {"type": {"type": "string", "description": "Тип довідника, напр. Контрагенты"},
              "filters": {"type": "object",
@@ -438,7 +444,11 @@ TOOLS: dict[str, ToolSpec] = {
             "you need to filter/sort by a field. If the question is 'how many'/'for what total "
             "sum'/'average'/'max'/'min' — use `agg` INSTEAD OF pulling rows and counting by "
             "hand: e.g. agg=[\"count\"] or agg=[\"sum:Сумма\"]. The response then takes the "
-            "shape {\"aggregates\":[...]} instead of {\"data\":[...]}."
+            "shape {\"aggregates\":[...]} instead of {\"data\":[...]}. For 'how many items of a "
+            "catalog' use agg=[\"count\"] together with exclude_groups=true (groups are "
+            "folders, not items); if the catalog is hierarchical, report groups separately: a "
+            "second call agg=[\"count\"] without exclude_groups, the difference is the number "
+            "of groups (e.g. '9 counterparties, plus 3 groups')."
         )),
     "get_object": ToolSpec(
         "get_object",

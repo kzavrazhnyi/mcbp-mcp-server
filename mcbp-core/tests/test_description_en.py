@@ -8,15 +8,15 @@ import hashlib
 from mcbp_core.tools import TOOLS, tool_specs
 
 # Snapshot of the Ukrainian `description` values as of the commit that introduced
-# `description_en` — guards against an accidental reword invalidating the Anthropic prompt cache.
+# `description_en` (search_catalog/filter_catalog hashes updated in 0.1.9 for the count rule) — guards against an accidental reword invalidating the Anthropic prompt cache.
 _UA_DESCRIPTION_SHA256 = {
-    "search_catalog": "5e8e37365a2fd52f7d84d9e78168d2b9cf3c90a60401c6436f72c8fd82302ede",
+    "search_catalog": "e2e26634ff896912cf967cacf41ec79bd773ef38a01cae48050962b125dd6fae",
     "get_documents": "c5d67095d419fca314c4a938144a01b2663d3a5d9880dfe3ed39f01aa8a43950",
     "get_schema": "d3be181efe3a5b719deefee74d22116ebfbba11700ecd5e2aa7792b4a258faa7",
     "get_register_balance": "d41a2b2a71945bb4c9634af252bee01dd36c20304b351043cca381a26460691e",
     "list_metadata": "c2e653bb50f82be685233312443eb1ececb3d9212651e07ae6abcde91c7d01e6",
     "describe_metadata": "2fc553a566d0891a078fa88e6c31c390f3845c2e3d2f965c548b5d8596aee5aa",
-    "filter_catalog": "00d49eda5480210ad18d0011064d90572fb55f318faf16bbc3ff04df6ac7b8d8",
+    "filter_catalog": "b4cd2b0fe4b7e05fbfa7957646debfc70d3568615f8d4da0e3f15a90d2d5d1a0",
     "get_object": "f00ce22527682f57f50f8a6ac352b92d6350c126008e9165541ce4fcee3390fe",
     "health": "2b472b33a1af9c2bbfbe89bbb2434dd9a85ad05c91208a7e24d856e8edc9f365",
     "write_object": "a321af95fec111f84201bd925f03b71c4b4f719d6a91a5f9d2274da091095a0f",
@@ -43,3 +43,16 @@ def test_description_en_defaults_to_none():
 
     spec = ToolSpec("x", "опис", {"type": "object", "properties": {}, "required": []}, TOOLS["health"].executor)
     assert spec.description_en is None
+
+
+def test_count_rule_in_descriptions():
+    for text in (TOOLS["filter_catalog"].description, TOOLS["filter_catalog"].description_en):
+        assert "agg" in text and "exclude_groups" in text and "count" in text
+    for text in (TOOLS["search_catalog"].description, TOOLS["search_catalog"].description_en):
+        assert "filter_catalog" in text and "agg" in text and "exclude_groups" in text
+
+
+def test_tool_counts_unchanged():
+    assert len(TOOLS) == 13
+    assert len(tool_specs(surface="mcp")) == 10
+    assert len(tool_specs(surface="mcp", include_write=True)) == 13
