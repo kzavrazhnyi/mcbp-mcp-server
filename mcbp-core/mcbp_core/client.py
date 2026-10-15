@@ -359,10 +359,13 @@ class MCBPClient:
 
     async def _request(self, method: str, path: str, **kw) -> Any:
         path = path.lstrip("/")  # httpx base_url requires relative paths
-        is_chat = path.startswith("ai/v1/chats")
+        is_tips = path.startswith("ai/v1/tips")
+        is_chat = path.startswith("ai/v1/chats") or is_tips
         brief = _kw_brief(kw, chat=is_chat)
         if self._mock:
             log.info("[mock] %s %s %s", method, path, brief)
+            if is_tips:
+                return _mock_tips(self._cfg.user, method, path, kw)
             if is_chat:
                 return _mock_chats(self._cfg.user, method, path, kw)
             return _mock_response(method, path, kw)
@@ -667,6 +670,44 @@ class MCBPClient:
             params=self._chat_params(client_key), json=body,
         )
 
+    # --- Business tips: service routes for the web app, NOT model tools. Same owner model and
+    # log redaction as the chat archive (texts are the user's data; `client` is the device key).
+    @staticmethod
+    def _tip_path(tip_id: str) -> str:
+        return f"/ai/v1/tips/{quote(tip_id, safe='')}"
+
+    async def list_tips(self, hidden: bool = False, client_key: str | None = None) -> dict:
+        """{"data": [{id, title, text, basis, topic, date, read, pinned, hidden, chat}, ...]} —
+        pinned first, then newest, max 100. Hidden tips only with `hidden=True`."""
+        return await self._request(
+            "GET", "/ai/v1/tips",
+            params=self._chat_params(client_key, hidden="true" if hidden else None),
+        )
+
+    async def create_tips(self, tips: list[dict], client_key: str | None = None) -> dict:
+        """Stores 1..20 [{"title", "text"?, "basis"?, "topic"?}] all-or-nothing. Returns
+        {"data": [tip, ...]} (HTTP 201). POST is never retried."""
+        return await self._request(
+            "POST", "/ai/v1/tips", params=self._chat_params(client_key), json={"tips": tips},
+        )
+
+    async def patch_tip(self, tip_id: str, *, read: bool | None = None,
+                        pinned: bool | None = None, hidden: bool | None = None,
+                        chat: str | None = None, client_key: str | None = None) -> dict:
+        """{"data": tip}. Only the passed fields are sent; `chat=""` unlinks the chat."""
+        body = {k: v for k, v in
+                {"read": read, "pinned": pinned, "hidden": hidden, "chat": chat}.items()
+                if v is not None}
+        return await self._request(
+            "PATCH", self._tip_path(tip_id), params=self._chat_params(client_key), json=body,
+        )
+
+    async def delete_tip(self, tip_id: str, client_key: str | None = None) -> dict:
+        """{"data": {"id": ..., "deleted": true}}."""
+        return await self._request(
+            "DELETE", self._tip_path(tip_id), params=self._chat_params(client_key),
+        )
+
     # --- Configuration introspection (works for ANY 1C configuration) ---
     async def _cached_get(self, path: str) -> Any:
         """GET a metadata route through the metadata cache (per-client, or shared per base)."""
@@ -901,6 +942,62 @@ def _mock_chats(user: str, method: str, path: str, kw: dict) -> dict:
     if not 1 <= limit <= 1000:
         raise ParameterError(f"limit must be an integer 1..1000, got {limit}")
     return {"data": {**_chat_head(chat), "messages": chat["messages"][-limit:]}}
+
+
+_MOCK_TIPS: dict[tuple[str, str], dict[str, dict]] = {}
+
+
+def reset_mock_tips() -> None:
+    _MOCK_TIPS.clear()
+
+
+def _mock_tips(user: str, method: str, path: str, kw: dict) -> dict:
+    owner = (user, str((kw.get("params") or {}).get("client") or ""))
+    tips = _MOCK_TIPS.setdefault(owner, {})
+    params = kw.get("params") or {}
+    body = kw.get("json") or {}
+    parts = [p for p in path.split("?", 1)[0].split("/") if p][3:]  # after ai/v1/tips
+
+    def head(t: dict) -> dict:
+        return {k: v for k, v in t.items() if k != "seq"}
+
+    if not parts:
+        if method == "GET":
+            show_hidden = str(params.get("hidden") or "").lower() in ("true", "1")
+            rows = [t for t in tips.values() if show_hidden or not t["hidden"]]
+            rows.sort(key=lambda t: (t["date"], t["seq"]), reverse=True)
+            rows.sort(key=lambda t: not t["pinned"])
+            return {"data": [head(t) for t in rows[:100]]}
+        items = body.get("tips")
+        if not isinstance(items, list) or not 1 <= len(items) <= 20:
+            raise ParameterError("tips must be an array of 1..20 items")
+        for it in items:
+            title = it.get("title") if isinstance(it, dict) else None
+            if not isinstance(title, str) or not title.strip() or len(title) > 150:
+                raise ParameterError("title is required (max 150 characters)")
+            if len(it.get("topic") or "") > 50:
+                raise ParameterError("topic is at most 50 characters")
+        created = []
+        for it in items:
+            tip = {"id": str(uuid.uuid4()), "title": it["title"], "text": it.get("text") or "",
+                   "basis": it.get("basis") or "", "topic": it.get("topic") or "",
+                   "date": _mock_now(), "read": False, "pinned": False, "hidden": False,
+                   "chat": "", "seq": next(_MOCK_SEQ)}
+            tips[tip["id"]] = tip
+            created.append(head(tip))
+        return {"data": created}
+    tip = tips.get(parts[0])
+    if tip is None:
+        raise NotFoundError(f"tip {parts[0]} not found")
+    if method == "DELETE":
+        del tips[parts[0]]
+        return {"data": {"id": parts[0], "deleted": True}}
+    if method == "PATCH":
+        for key in ("read", "pinned", "hidden", "chat"):
+            if key in body:
+                tip[key] = body[key]
+        return {"data": head(tip)}
+    return {"data": head(tip)}
 
 
 def _mock_response(method: str, path: str, kw: dict) -> Any:
