@@ -887,6 +887,18 @@ class MCBPClient:
             "PATCH", f"/ai/v1/object/{kind}/{type_}/{object_id}", json=fields,
         )
 
+    async def set_register_record(self, type_: str, fields: dict) -> dict:
+        """Upserts ONE information-register record natively (no MCBP Plus). `fields` is a flat
+        {field: value} dict: the key is every dimension plus `Period` for a periodic register;
+        any other field is a resource/attribute and only the passed ones change. Values follow
+        `patch_object` (Ref UUID, "MetadataName:UUID" for a composite type, an enum value name,
+        None clears). A recorder-subordinate register is BAD_PARAMETER; no delete. POST is not
+        retried. Response (no `data` wrapper): {"register","created","key","changed"
+        [{"field","old","new"}, ...]} — an unchanged repeat gives `changed: []`."""
+        return await self._request(
+            "POST", f"/ai/v1/registers/{type_}/records", json=fields,
+        )
+
     async def set_function_status(self, function_id: str, *, version: str, status: str,
                                   date_execution: str | None = None,
                                   disable: bool | None = None) -> dict:
@@ -1713,6 +1725,11 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return {"data": rows, "cursor": None}
     if "/registers/" in path and path.endswith("/balance"):
         return {"type": path.split("/")[-2], "data": {"balance": 6200.0, "currency": "UAH"}}
+    if method == "POST" and "/registers/" in path and path.endswith("/records"):
+        body = kw.get("json") or {}
+        changed = [{"field": k, "old": None, "new": v} for k, v in body.items()]
+        return {"register": path.split("/")[-2], "created": True, "key": {},
+                "changed": changed}
     if "/registers/" in path and path.endswith("/records"):
         rows = [
             {"Period": "2026-08-01 00:00:00",

@@ -1,6 +1,8 @@
 """MCBPClient: typed error classification (`error.code` → exception type) and `patch_object`."""
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -64,6 +66,53 @@ async def test_patch_object_sends_patch_method_with_json_body():
         )
         assert route.calls[0].request.method == "PATCH"
         assert result["changed"][0]["new"] == "Завершений"
+    finally:
+        await client.shutdown()
+
+
+async def test_set_register_record_mock_mode():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    result = await client.set_register_record("MCBP_StatusFunctions", {"Function": "uuid-1"})
+    assert result["register"] == "MCBP_StatusFunctions"
+    assert result["created"] is True
+    assert result["changed"] == [{"field": "Function", "old": None, "new": "uuid-1"}]
+
+
+@respx.mock
+async def test_set_register_record_posts_flat_json_body():
+    body = {"Function": "uuid-1", "Status": "Done", "Version": "1.0"}
+    route = respx.post("http://test/ai/v1/registers/MCBP_StatusFunctions/records").mock(
+        return_value=httpx.Response(200, json={
+            "register": "MCBP_StatusFunctions", "created": False, "key": {"Function": "uuid-1"},
+            "changed": [{"field": "Status", "old": "Waiting", "new": "Done"}],
+        }))
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.set_register_record("MCBP_StatusFunctions", body)
+        request = route.calls[0].request
+        assert request.method == "POST"
+        assert json.loads(request.content) == body
+        assert result["created"] is False
+        assert result["changed"][0]["new"] == "Done"
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_set_register_record_bad_parameter_is_typed_and_not_retried():
+    route = respx.post("http://test/ai/v1/registers/X/records").mock(
+        return_value=httpx.Response(400, json={
+            "error": {"code": "BAD_PARAMETER", "message": "Incomplete key: missing Period"}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(ParameterError) as exc_info:
+            await client.set_register_record("X", {"Function": "uuid-1"})
+        assert "Incomplete key" in str(exc_info.value)
+        assert route.call_count == 1
     finally:
         await client.shutdown()
 

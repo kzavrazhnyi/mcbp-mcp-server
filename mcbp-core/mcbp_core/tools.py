@@ -151,6 +151,10 @@ async def _patch_object(c: MCBPClient, a: dict) -> Any:
     )
 
 
+async def _set_register_record(c: MCBPClient, a: dict) -> Any:
+    return await c.set_register_record(type_=a["type"], fields=a["fields"])
+
+
 async def _set_function_status(c: MCBPClient, a: dict) -> Any:
     return await c.set_function_status(
         function_id=a["function_id"], version=a["version"], status=a["status"],
@@ -907,6 +911,36 @@ TOOLS: dict[str, ToolSpec] = {
             "the same change changes nothing (`changed: false`). Unknown function, or a task of "
             "another function -> NOT_FOUND; a base without a task object -> NOT_CONFIGURED; no "
             "right -> FORBIDDEN; locked -> LOCKED."
+        )),
+    "set_register_record": ToolSpec(
+        "set_register_record",
+        "Створює або змінює ОДИН запис регістра відомостей напряму, БЕЗ MCBP Plus (лише upsert, "
+        "видалення немає). `fields` — плоский {поле: значення}: ключ запису — УСІ виміри "
+        "регістра плюс `Period` для періодичного (неповний ключ — BAD_PARAMETER); решта полів — "
+        "ресурси/реквізити, змінюються лише передані. Посилання — UUID (Ref.Data), для "
+        "складеного типу — \"ІмяМетаданих:UUID\"; перелік — ім'я значення; null очищає. Імена "
+        "полів — з describe_metadata. Регістр, підпорядкований реєстратору, — BAD_PARAMETER. "
+        "Відповідь: `created` і `changed` (старе/нове) — підтверди результат саме за ними.",
+        _params(
+            {"type": {"type": "string",
+                      "description": "Ім'я регістру відомостей (з list_metadata)"},
+             "fields": {"type": "object",
+                        "description": "{поле: значення}: усі виміри (+ Period) і ресурси/"
+                                       "реквізити, що змінюються"}},
+            ["type", "fields"],
+        ),
+        _set_register_record,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates ONE information-register record natively, WITHOUT MCBP Plus "
+            "(upsert only, no delete). `fields` is a flat {field: value}: the record key is ALL "
+            "dimensions of the register plus `Period` for a periodic one (incomplete key -> "
+            "BAD_PARAMETER); other fields are resources/attributes and only the passed ones "
+            "change. A reference is a UUID (Ref.Data), for a composite type \"MetadataName:UUID\"; "
+            "an enum is the value name (e.g. \"Active\"); null clears. Field names come from "
+            "describe_metadata. A recorder-subordinate register -> BAD_PARAMETER. The response "
+            "has `created` and `changed` (old/new) — confirm the result to the user from those."
         )),
 }
 
