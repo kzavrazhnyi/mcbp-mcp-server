@@ -53,6 +53,6 @@ def test_count_rule_in_descriptions():
 
 
 def test_tool_counts_unchanged():
-    assert len(TOOLS) == 13
-    assert len(tool_specs(surface="mcp")) == 10
-    assert len(tool_specs(surface="mcp", include_write=True)) == 13
+    assert len(TOOLS) == 19
+    assert len(tool_specs(surface="mcp")) == 12
+    assert len(tool_specs(surface="mcp", include_write=True)) == 19
