@@ -40,7 +40,7 @@ server is the thin MCP adapter in front of it.
 
 ## Tools
 
-11 read tools are always registered. Six write tools appear only when `MCP_ALLOW_WRITE` is on.
+12 read tools are always registered. Eight write tools appear only when `MCP_ALLOW_WRITE` is on.
 
 | Tool | What it does |
 |---|---|
@@ -57,10 +57,13 @@ server is the thin MCP adapter in front of it.
 | `health` | Service ping — reports whether the infobase key matches |
 | `write_object` *(gated)* | Create/update an object through MCBP Plus conversion rules |
 | `patch_object` *(gated)* | Update header attributes of an existing object natively |
+| `set_register_record` *(gated)* | Upsert one information-register record natively (key = all dimensions + `Period`; no delete) |
 | `save_context` *(gated)* | Push a conversation turn upstream (skeleton) |
 | `set_function_status` *(gated)* | Set the support-tracker status of one MCBP function |
 | `upsert_function` *(gated)* | Create or update one MCBP_Functions item natively (no Plus conversion) |
 | `upsert_idea` *(gated)* | Create or update one MCBP_Ideas item natively; link ideas to a function via `upsert_function` `ideas` |
+| `list_function_tasks` | Tracker tasks whose subject is one MCBP_Functions item, newest first |
+| `upsert_function_task` *(gated)* | Create or update one tracker task of an MCBP_Functions item natively |
 
 The model is expected to walk `list_metadata → describe_metadata → search/filter → get_object`.
 Errors are deliberately not swallowed: an unknown field comes back as `BAD_PARAMETER` naming that

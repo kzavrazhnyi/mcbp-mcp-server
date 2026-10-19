@@ -70,6 +70,9 @@ class RecordingClient:
         return self._record("patch_object", kind=kind, type_=type_, object_id=object_id,
                              fields=fields)
 
+    async def set_register_record(self, type_, fields):
+        return self._record("set_register_record", type_=type_, fields=fields)
+
     async def register_records(self, type_, date_from=None, date_to=None, filters=None,
                                 orderby=None, desc=False, limit=None):
         return self._record("register_records", type_=type_, date_from=date_from,
@@ -221,6 +224,15 @@ async def test_patch_object_maps_metadata_type_id_fields(client):
     assert method == "patch_object"
     assert kw == {"kind": "Documents", "type_": "ЗаказПокупателя", "object_id": "uuid-1",
                   "fields": {"СостояниеЗаказа": "uuid-2"}}
+
+
+async def test_set_register_record_maps_type_and_fields(client):
+    await TOOLS["set_register_record"].executor(
+        client, {"type": "MCBP_StatusFunctions", "fields": {"Function": "uuid-1"}}
+    )
+    method, kw = client.calls[0]
+    assert method == "set_register_record"
+    assert kw == {"type_": "MCBP_StatusFunctions", "fields": {"Function": "uuid-1"}}
 
 
 async def test_register_records_defaults_limit_and_desc_bool(client):

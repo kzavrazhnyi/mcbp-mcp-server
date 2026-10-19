@@ -65,7 +65,7 @@
         },
         {
           "name": "MCP_ALLOW_WRITE",
-          "description": "Set to 1 to also register the three write tools (write_object, patch_object, save_context). Off by default — the server is read-only unless this is enabled",
+          "description": "Set to 1 to also register the write tools (write_object, patch_object, set_register_record, save_context, set_function_status, upsert_function, upsert_idea, upsert_function_task). Off by default — the server is read-only unless this is enabled",
           "isRequired": false,
           "isSecret": false,
           "format": "string",
