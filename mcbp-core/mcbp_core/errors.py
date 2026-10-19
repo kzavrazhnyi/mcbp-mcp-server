@@ -122,3 +122,11 @@ class NotConfiguredError(MCBPError):
 
     code = "NOT_CONFIGURED"
     http_status = 422
+
+
+class ConflictError(MCBPError):
+    """An optimistic-revision write found a newer stored revision (`CONFLICT`) — nothing was
+    written; the caller re-reads, merges and retries."""
+
+    code = "CONFLICT"
+    http_status = 409

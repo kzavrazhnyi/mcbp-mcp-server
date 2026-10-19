@@ -40,7 +40,7 @@ server is the thin MCP adapter in front of it.
 
 ## Tools
 
-10 read tools are always registered. Three write tools appear only when `MCP_ALLOW_WRITE` is on.
+12 read tools are always registered. Eight write tools appear only when `MCP_ALLOW_WRITE` is on.
 
 | Tool | What it does |
 |---|---|
@@ -53,10 +53,17 @@ server is the thin MCP adapter in front of it.
 | `get_object` | **All** attribute values of one record + its tabular sections |
 | `get_register_balance` | Accumulation-register balance (native query) |
 | `get_register_records` | Raw rows of an information or accumulation register |
+| `get_event_log` | Event log slice (errors/warnings by default) under the user's own rights |
 | `health` | Service ping — reports whether the infobase key matches |
 | `write_object` *(gated)* | Create/update an object through MCBP Plus conversion rules |
 | `patch_object` *(gated)* | Update header attributes of an existing object natively |
+| `set_register_record` *(gated)* | Upsert one information-register record natively (key = all dimensions + `Period`; no delete) |
 | `save_context` *(gated)* | Push a conversation turn upstream (skeleton) |
+| `set_function_status` *(gated)* | Set the support-tracker status of one MCBP function |
+| `upsert_function` *(gated)* | Create or update one MCBP_Functions item natively (no Plus conversion) |
+| `upsert_idea` *(gated)* | Create or update one MCBP_Ideas item natively; link ideas to a function via `upsert_function` `ideas` |
+| `list_function_tasks` | Tracker tasks whose subject is one MCBP_Functions item, newest first |
+| `upsert_function_task` *(gated)* | Create or update one tracker task of an MCBP_Functions item natively |
 
 The model is expected to walk `list_metadata → describe_metadata → search/filter → get_object`.
 Errors are deliberately not swallowed: an unknown field comes back as `BAD_PARAMETER` naming that
@@ -112,7 +119,7 @@ claude mcp add mcbp-ai --env ONEC_BASE_URL=http://host/base/hs/mcbp_ai \
 | `ONEC_TIMEOUT` | no | `30` | Request timeout, seconds |
 | `ONEC_POOL_MAX` | no | `10` | Connection pool size |
 | `ONEC_VERIFY_SSL` | no | `1` | `0` for self-signed intranet publications |
-| `MCP_ALLOW_WRITE` | no | `0` | `1` enables the three write tools |
+| `MCP_ALLOW_WRITE` | no | `0` | `1` enables the six write tools |
 
 ### `ONEC_BASE_URL` — leave off the `/ai/v1`
 
@@ -135,7 +142,8 @@ and the service's own URL templates start with `ai/v1`.
   the key does not match, `health` reports `key: false` and every other route answers
   `403 KEY_MISMATCH`.
 - `write_object` additionally requires the MCBP Plus extension and a configured conversion rule;
-  without one it returns `422 CONVERSION_NOT_CONFIGURED` and writes nothing.
+  without one it returns `CONVERSION_NOT_CONFIGURED` (HTTP 422 in the current module source; some
+  deployed builds answer 400) and writes nothing.
 
 ## Troubleshooting
 

@@ -21,7 +21,7 @@ Python package only.
 - **Typed errors** — the `{"error": {"code", "message"}}` envelope BAS returns is mapped to
   exception classes (`ParameterError`, `NotFoundError`, `KeyMismatchError`, `PlusRequiredError`, …),
   so callers branch on type instead of re-parsing text.
-- **A tool registry** — 13 `ToolSpec`s (JSON Schema + async executor) covering catalogs, documents,
+- **A tool registry** — 14 `ToolSpec`s (JSON Schema + async executor) covering catalogs, documents,
   registers, metadata introspection and the gated write routes. Both front-ends register from this
   one list, so their surfaces cannot drift apart.
 
@@ -46,7 +46,7 @@ Selecting the tools a front-end should expose:
 
 ```python
 read_only = tool_specs(surface="mcp")                        # 10 specs
-everything = tool_specs(surface="mcp", include_write=True)   # 13 specs
+everything = tool_specs(surface="mcp", include_write=True)   # 14 specs
 ```
 
 Tool descriptions are Ukrainian by default; `ToolSpec.description_en` carries the English variant

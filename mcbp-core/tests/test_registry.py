@@ -76,6 +76,58 @@ def test_patch_object_is_write_only_and_on_both_surfaces():
     assert set(spec.parameters["required"]) == {"metadata", "type", "id", "fields"}
 
 
+def test_set_register_record_is_write_only_and_mcp_only():
+    spec = TOOLS["set_register_record"]
+    assert spec.read_only is False
+    assert spec.surfaces == frozenset({"mcp"})
+    assert set(spec.parameters["required"]) == {"type", "fields"}
+    backend_names = {s.name for s in tool_specs(surface="backend", include_write=True)}
+    mcp_read_only = {s.name for s in tool_specs(surface="mcp", include_write=False)}
+    mcp_write = {s.name for s in tool_specs(surface="mcp", include_write=True)}
+    assert "set_register_record" not in backend_names
+    assert "set_register_record" not in mcp_read_only
+    assert "set_register_record" in mcp_write
+
+
+def test_set_function_status_is_write_only_and_mcp_only():
+    spec = TOOLS["set_function_status"]
+    assert spec.read_only is False
+    assert spec.surfaces == frozenset({"mcp"})
+    assert set(spec.parameters["required"]) == {"function_id", "version", "status"}
+    backend_names = {s.name for s in tool_specs(surface="backend", include_write=True)}
+    mcp_read_only = {s.name for s in tool_specs(surface="mcp", include_write=False)}
+    mcp_write = {s.name for s in tool_specs(surface="mcp", include_write=True)}
+    assert "set_function_status" not in backend_names
+    assert "set_function_status" not in mcp_read_only
+    assert "set_function_status" in mcp_write
+
+
+def test_upsert_function_is_write_only_and_mcp_only():
+    spec = TOOLS["upsert_function"]
+    assert spec.read_only is False
+    assert spec.surfaces == frozenset({"mcp"})
+    assert spec.parameters["required"] == []
+    backend_names = {s.name for s in tool_specs(surface="backend", include_write=True)}
+    mcp_read_only = {s.name for s in tool_specs(surface="mcp", include_write=False)}
+    mcp_write = {s.name for s in tool_specs(surface="mcp", include_write=True)}
+    assert "upsert_function" not in backend_names
+    assert "upsert_function" not in mcp_read_only
+    assert "upsert_function" in mcp_write
+
+
+def test_upsert_idea_is_write_only_and_mcp_only():
+    spec = TOOLS["upsert_idea"]
+    assert spec.read_only is False
+    assert spec.surfaces == frozenset({"mcp"})
+    assert spec.parameters["required"] == []
+    backend_names = {s.name for s in tool_specs(surface="backend", include_write=True)}
+    mcp_read_only = {s.name for s in tool_specs(surface="mcp", include_write=False)}
+    mcp_write = {s.name for s in tool_specs(surface="mcp", include_write=True)}
+    assert "upsert_idea" not in backend_names
+    assert "upsert_idea" not in mcp_read_only
+    assert "upsert_idea" in mcp_write
+
+
 def test_tool_specs_surface_filters_health_to_mcp_only():
     backend_names = {spec.name for spec in tool_specs(surface="backend", include_write=True)}
     mcp_names = {spec.name for spec in tool_specs(surface="mcp", include_write=True)}

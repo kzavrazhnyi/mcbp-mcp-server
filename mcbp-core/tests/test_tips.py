@@ -12,7 +12,8 @@ from mcbp_core.client import ConnectionConfig, MCBPClient, reset_mock_tips
 from mcbp_core.errors import LicenseRequiredError, NotFoundError, ParameterError
 
 TIP = {"id": "t1", "title": "T", "text": "x", "basis": "b", "topic": "sales",
-       "date": "2026-10-14 10:00:00", "read": False, "pinned": False, "hidden": False, "chat": ""}
+       "date": "2026-10-14 10:00:00", "read": False, "pinned": False, "hidden": False, "chat": "",
+       "rating": 0}
 
 
 async def _live() -> MCBPClient:
@@ -48,6 +49,10 @@ async def test_create_patch_delete_wire_format():
     assert post.calls.last.request.url.query == b"client=k"
     await client.patch_tip("t1", read=True, chat="", client_key="k")
     assert json.loads(patch.calls.last.request.content) == {"read": True, "chat": ""}
+    await client.patch_tip("t1", rating=-1)
+    assert json.loads(patch.calls.last.request.content) == {"rating": -1}
+    await client.patch_tip("t1", rating=0)
+    assert json.loads(patch.calls.last.request.content) == {"rating": 0}
     assert (await client.delete_tip("t1"))["data"]["deleted"] is True
     assert delete.calls.last.request.url.query == b""
     await client.shutdown()
@@ -113,3 +118,39 @@ async def test_mock_owner_isolation_and_validation():
         await client.create_tips([{"title": ""}])
     with pytest.raises(ParameterError):
         await client.create_tips([])
+
+
+@respx.mock
+async def test_rating_rejection_is_typed():
+    respx.patch("http://test/ai/v1/tips/t1").mock(return_value=httpx.Response(
+        422, json={"error": {"code": "BAD_PARAMETER", "message": "rating must be 1, -1 or 0"}}))
+    client = await _live()
+    with pytest.raises(ParameterError):
+        await client.patch_tip("t1", rating=5)
+    await client.shutdown()
+
+
+async def test_mock_rating_cycle():
+    reset_mock_tips()
+    client = _mock_client()
+    tip = (await client.create_tips([{"title": "A"}], client_key="k"))["data"][0]
+    assert tip["rating"] == 0
+    assert (await client.patch_tip(tip["id"], rating=1, client_key="k"))["data"]["rating"] == 1
+    listed = (await client.list_tips(client_key="k"))["data"]
+    assert listed[0]["rating"] == 1 and listed[0]["read"] is False
+    await client.patch_tip(tip["id"], read=True, client_key="k")
+    assert (await client.list_tips(client_key="k"))["data"][0]["rating"] == 1
+    await client.patch_tip(tip["id"], rating=-1, client_key="k")
+    assert (await client.list_tips(client_key="k"))["data"][0]["rating"] == -1
+    await client.patch_tip(tip["id"], rating=0, client_key="k")
+    assert (await client.list_tips(client_key="k"))["data"][0]["rating"] == 0
+
+
+@pytest.mark.parametrize("bad", [2, -2, True, "1", 0.5])
+async def test_mock_rating_validation(bad):
+    reset_mock_tips()
+    client = _mock_client()
+    tip = (await client.create_tips([{"title": "A"}]))["data"][0]
+    with pytest.raises(ParameterError, match="rating"):
+        await client.patch_tip(tip["id"], rating=bad)
+    assert (await client.list_tips())["data"][0]["rating"] == 0

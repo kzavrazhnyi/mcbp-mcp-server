@@ -328,6 +328,24 @@ def _looks_like_envelope(value: dict[str, Any]) -> bool:
     return isinstance(value["type"], str) and isinstance(value["data"], (list, dict))
 
 
+_EVENT_LOG_ENVELOPE_KEYS = frozenset({"data", "truncated", "from", "to"})
+_EVENT_LOG_ROW_KEYS = frozenset({
+    "date", "level", "event", "user", "metadata", "data_presentation", "comment", "session",
+    "application", "computer",
+})
+# Platform values of an event-log row (timestamps, level/event names, metadata full names,
+# session numbers, client application ids) — never personal data, so they stay readable.
+_EVENT_LOG_OPEN_KEYS = frozenset({"date", "level", "event", "metadata", "session", "application"})
+
+
+def _looks_like_event_log_envelope(value: dict[str, Any]) -> bool:
+    """`get_event_log`: exactly `{data, truncated, from, to}` whose rows carry exactly the
+    ten event-log fields — anything less specific keeps the default masking."""
+    if value.keys() != _EVENT_LOG_ENVELOPE_KEYS or not isinstance(value["data"], list):
+        return False
+    return all(isinstance(r, dict) and r.keys() == _EVENT_LOG_ROW_KEYS for r in value["data"])
+
+
 def _looks_like_aggregate_envelope(value: dict[str, Any]) -> bool:
     return "aggregates" in value
 
@@ -471,6 +489,8 @@ class Masker:
                 return self._mask_change_entry(value, context)
             if _looks_like_aggregate_envelope(value):
                 return self._mask_aggregate_envelope(value, context)
+            if _looks_like_event_log_envelope(value):
+                return self._mask_event_log_envelope(value)
             if _looks_like_envelope(value):
                 return self._mask_envelope(value, context)
             return {k: self._walk_value(k, v, context) for k, v in value.items()}
@@ -516,6 +536,14 @@ class Masker:
         out["old"] = self._mask_scalar(field_name, value.get("old"), context)
         out["new"] = self._mask_scalar(field_name, value.get("new"), context)
         return out
+
+    def _mask_event_log_envelope(self, value: dict[str, Any]) -> dict[str, Any]:
+        rows = [
+            {k: v if k in _EVENT_LOG_OPEN_KEYS else self._mask_scalar(k, v, None)
+             for k, v in row.items()}
+            for row in value["data"]
+        ]
+        return {**value, "data": rows}
 
     def _mask_aggregate_envelope(
         self, value: dict[str, Any], context: str | None

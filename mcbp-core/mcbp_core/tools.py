@@ -96,6 +96,14 @@ async def _register_records(c: MCBPClient, a: dict) -> Any:
     )
 
 
+async def _get_event_log(c: MCBPClient, a: dict) -> Any:
+    return await c.get_event_log(
+        levels=a.get("level"), date_from=a.get("from"), date_to=a.get("to"),
+        event=a.get("event"), user=a.get("user"), metadata=a.get("metadata"),
+        limit=a.get("limit", 50),
+    )
+
+
 async def _filter_catalog(c: MCBPClient, a: dict) -> Any:
     return await c.filter_catalog(
         type_=a["type"], filters=a.get("filters") or {}, orderby=a.get("orderby"),
@@ -140,6 +148,45 @@ async def _save_context(c: MCBPClient, a: dict) -> Any:
 async def _patch_object(c: MCBPClient, a: dict) -> Any:
     return await c.patch_object(
         kind=a["metadata"], type_=a["type"], object_id=a["id"], fields=a["fields"],
+    )
+
+
+async def _set_register_record(c: MCBPClient, a: dict) -> Any:
+    return await c.set_register_record(type_=a["type"], fields=a["fields"])
+
+
+async def _set_function_status(c: MCBPClient, a: dict) -> Any:
+    return await c.set_function_status(
+        function_id=a["function_id"], version=a["version"], status=a["status"],
+        date_execution=a.get("date_execution"), disable=a.get("disable"),
+    )
+
+
+async def _upsert_function(c: MCBPClient, a: dict) -> Any:
+    return await c.upsert_function(
+        a.get("function_id"), description=a.get("description"),
+        functions_type=a.get("functions_type"), deletion_mark=a.get("deletion_mark"),
+        specification=a.get("specification"), ideas=a.get("ideas"),
+    )
+
+
+async def _upsert_idea(c: MCBPClient, a: dict) -> Any:
+    return await c.upsert_idea(
+        a.get("idea_id"), description=a.get("description"),
+        specification=a.get("specification"), deletion_mark=a.get("deletion_mark"),
+    )
+
+
+async def _list_function_tasks(c: MCBPClient, a: dict) -> Any:
+    return await c.list_function_tasks(a["function_id"], limit=a.get("limit", 50))
+
+
+async def _upsert_function_task(c: MCBPClient, a: dict) -> Any:
+    return await c.upsert_function_task(
+        a["function_id"], a.get("task_id"), description=a.get("description"),
+        specification=a.get("specification"), deadline=a.get("deadline"),
+        importance=a.get("importance"), executed=a.get("executed"),
+        deletion_mark=a.get("deletion_mark"),
     )
 
 
@@ -635,6 +682,265 @@ TOOLS: dict[str, ToolSpec] = {
             "desc=true, limit=1). There is NO cursor pagination (no Ref, no stable key) — "
             "`truncated: true` in the response means 'narrow the filter', NOT 'fetch the next "
             "page'. Call list_metadata/describe_metadata first to learn the exact field names."
+        )),
+    "set_function_status": ToolSpec(
+        "set_function_status",
+        "Встановлює стан функції MCBP у трекері підтримки: один запис регістра "
+        "MCBP_StatusFunctions на елемент довідника MCBP_Functions (лише останній стан, без "
+        "історії). `function_id` — UUID елемента MCBP_Functions (Ref.Data зі search_catalog). "
+        "`status` — Waiting або Done; інше — BAD_PARAMETER з переліком допустимих. `version` — "
+        "до 12 символів. `date_execution` — YYYY-MM-DD (зберігається лише дата), \"\" очищає; "
+        "не передане поле `date_execution`/`disable` лишається як було. Той самий виклик удруге "
+        "нічого не змінює (`changed: false`). Невідома функція — NOT_FOUND; база без цього "
+        "регістра — NOT_CONFIGURED; немає права зміни регістра — FORBIDDEN.",
+        _params(
+            {"function_id": {"type": "string",
+                             "description": "UUID елемента довідника MCBP_Functions"},
+             "version": {"type": "string", "description": "Версія, до 12 символів"},
+             "status": {"type": "string", "enum": ["Waiting", "Done"]},
+             "date_execution": {"type": "string",
+                                "description": "YYYY-MM-DD; \"\" очищає дату"},
+             "disable": {"type": "boolean"}},
+            ["function_id", "version", "status"],
+        ),
+        _set_function_status,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Sets the support-tracker state of one MCBP function: the single "
+            "MCBP_StatusFunctions register record of an MCBP_Functions catalog item (latest "
+            "state only, no history). `function_id` is the MCBP_Functions item UUID (Ref.Data "
+            "from search_catalog). `status` is Waiting or Done; anything else is BAD_PARAMETER "
+            "listing the allowed names. `version` is at most 12 characters. `date_execution` is "
+            "YYYY-MM-DD (only the date is stored), \"\" clears it; an omitted "
+            "`date_execution`/`disable` keeps its stored value. Repeating the same call changes "
+            "nothing (`changed: false`). Unknown function -> NOT_FOUND; a base without this "
+            "register -> NOT_CONFIGURED; no update right on the register -> FORBIDDEN."
+        )),
+    "upsert_function": ToolSpec(
+        "upsert_function",
+        "Створює або змінює елемент довідника MCBP_Functions напряму, БЕЗ правил конвертації "
+        "MCBP Plus (write_object для цього довідника не працює). Без `function_id` — новий "
+        "елемент (`description` обов'язковий; кожен виклик створює ще один); з `function_id` "
+        "(UUID, Ref.Data зі search_catalog) — зміна лише переданих полів. `functions_type` — "
+        "ім'я значення перелічення реквізиту FunctionsType (список — describe_metadata або "
+        "текст BAD_PARAMETER), \"\" очищає. `deletion_mark: true` ставить позначку вилучення — "
+        "так прибирають тестовий елемент. `specification` — ТЗ функції: що саме вона має робити "
+        "(поведінка, вхідні дані, результат, обмеження), а не повтор назви; текст пишеться в ідею "
+        "першого рядка табличної частини Ideas (ідея створюється, якщо її немає), \"\" очищає "
+        "текст. `ideas` — ПОВНИЙ упорядкований список UUID елементів MCBP_Ideas для рядків "
+        "Ideas: рядки замінюються цілком, [] очищає, дублікати відкидаються, невідомий UUID — "
+        "NOT_FOUND з його назвою; спершу застосовуються `ideas`, потім `specification` змінює "
+        "ідею НОВОГО першого рядка. Та сама зміна удруге нічого не змінює "
+        "(`changed: false`). Невідомий `function_id` — NOT_FOUND; база без довідника — "
+        "NOT_CONFIGURED; немає права додавання/зміни — FORBIDDEN.",
+        _params(
+            {"function_id": {"type": "string",
+                             "description": "UUID елемента MCBP_Functions; без нього — створення"},
+             "description": {"type": "string",
+                             "description": "Найменування, не довше за DescriptionLength довідника; обов'язкове при створенні"},
+             "functions_type": {"type": "string",
+                                "description": "Ім'я значення перелічення FunctionsType; \"\" очищає"},
+             "deletion_mark": {"type": "boolean"},
+             "specification": {"type": "string",
+                               "description": "ТЗ: що функція має робити (поведінка, дані, результат), не повтор назви; \"\" очищає"},
+             "ideas": {"type": "array", "items": {"type": "string"},
+                       "description": "Повний упорядкований список UUID елементів MCBP_Ideas (рядки Ideas замінюються); [] очищає"}},
+            [],
+        ),
+        _upsert_function,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates one MCBP_Functions catalog item natively, WITHOUT MCBP Plus "
+            "conversion rules (write_object cannot write this catalog). No `function_id` -> a "
+            "new item (`description` required; every such call creates another one); with "
+            "`function_id` (UUID, Ref.Data from search_catalog) -> only the passed fields "
+            "change. `functions_type` is a value name of the FunctionsType enumeration "
+            "attribute (list via describe_metadata or the BAD_PARAMETER text), \"\" clears it. "
+            "`deletion_mark: true` sets the deletion mark - that is how a probe item is cleaned "
+            "up. `specification` is the function's spec: write what it must do (behaviour, "
+            "inputs, result, constraints), not a repeat of its name; it is stored in the idea of "
+            "the first Ideas row (created when there is none), \"\" clears the text. "
+            "`ideas` is the FULL ordered list of MCBP_Ideas item UUIDs for the Ideas rows: the "
+            "rows are replaced, [] clears them, duplicates are dropped, an unknown UUID -> "
+            "NOT_FOUND naming it; `ideas` is applied first, then `specification` edits the idea "
+            "of the NEW first row. "
+            "Repeating the same change changes nothing (`changed: false`). Unknown "
+            "`function_id` -> NOT_FOUND; a base without the catalog (or, when `specification` "
+            "is given, without the ideas catalog) -> NOT_CONFIGURED; no insert/update right "
+            "-> FORBIDDEN."
+        )),
+    "upsert_idea": ToolSpec(
+        "upsert_idea",
+        "Створює або змінює елемент довідника MCBP_Ideas (ідея) напряму, БЕЗ правил "
+        "конвертації MCBP Plus. Без `idea_id` — нова ідея (`description` обов'язковий; кожен "
+        "виклик створює ще одну); з `idea_id` (UUID) — зміна лише переданих полів. "
+        "`specification` — текст ідеї (що і навіщо), \"\" очищає. `deletion_mark: true` ставить "
+        "позначку вилучення. Дата зміни ставиться автоматично. Щоб прив'язати ідею до функції — "
+        "upsert_function з `ideas`. Та сама зміна удруге нічого не змінює (`changed: false`). "
+        "Невідомий `idea_id` — NOT_FOUND; база без довідника — NOT_CONFIGURED; немає права "
+        "додавання/зміни — FORBIDDEN.",
+        _params(
+            {"idea_id": {"type": "string",
+                         "description": "UUID елемента MCBP_Ideas; без нього — створення"},
+             "description": {"type": "string",
+                             "description": "Найменування ідеї, не довше за DescriptionLength довідника; обов'язкове при створенні"},
+             "specification": {"type": "string",
+                               "description": "Текст ідеї: що і навіщо; \"\" очищає"},
+             "deletion_mark": {"type": "boolean"}},
+            [],
+        ),
+        _upsert_idea,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates one MCBP_Ideas catalog item (an idea) natively, WITHOUT MCBP "
+            "Plus conversion rules. No `idea_id` -> a new idea (`description` required; every "
+            "such call creates another one); with `idea_id` (UUID) -> only the passed fields "
+            "change. `specification` is the idea text (what and why), \"\" clears it. "
+            "`deletion_mark: true` sets the deletion mark. The modification date is set "
+            "automatically. To link an idea to a function use upsert_function with `ideas`. "
+            "Repeating the same change changes nothing (`changed: false`). Unknown `idea_id` -> "
+            "NOT_FOUND; a base without the catalog -> NOT_CONFIGURED; no insert/update right -> "
+            "FORBIDDEN."
+        )),
+    "get_event_log": ToolSpec(
+        "get_event_log",
+        "Читає журнал реєстрації бази (лише читання) з правами ПОТОЧНОГО користувача: немає "
+        "права «Журнал реєстрації» — FORBIDDEN (адміністратор має його надати). Для питань "
+        "«які були помилки», «хто змінював об'єкт», «чому не записалось». `level` — масив з "
+        "error/warning/information/note; без нього — error і warning. `from`/`to` "
+        "(YYYY-MM-DD) — без них останні 24 години; не більше 31 дня і `to` не раніше `from`, "
+        "інакше BAD_PARAMETER. `event` — точна назва події (напр. _$Data$_.Update) або префікс "
+        "із * у кінці (_$Data$_.*). `user` — ім'я користувача. `metadata` — повне ім'я "
+        "об'єкта метаданих (Catalog.<Ім'я>, Document.<Ім'я>; невідоме — NOT_FOUND). Найновіші "
+        "першими, `limit` до 50; `truncated: true` — звузь період, рівні чи подію.",
+        _params(
+            {"level": {"type": "array",
+                       "items": {"type": "string",
+                                 "enum": ["error", "warning", "information", "note"]},
+                       "description": "Рівні подій; за замовчуванням [\"error\", \"warning\"]"},
+             "from": {"type": "string", "description": "Початок періоду YYYY-MM-DD (необов'язково)"},
+             "to": {"type": "string", "description": "Кінець періоду YYYY-MM-DD (необов'язково)"},
+             "event": {"type": "string",
+                       "description": "Точна назва події або префікс із * у кінці"},
+             "user": {"type": "string", "description": "Ім'я користувача бази"},
+             "metadata": {"type": "string",
+                          "description": "Повне ім'я об'єкта метаданих, напр. Catalog.<Ім'я>"},
+             "limit": {"type": "integer", "default": 50, "maximum": 50}},
+            [],
+        ),
+        _get_event_log,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Reads the base's event log (read-only) under the CURRENT user's rights: without "
+            "the EventLog right -> FORBIDDEN (an administrator must grant it). For questions "
+            "like 'what errors happened', 'who changed this object', 'why did it not save'. "
+            "`level` is an array of error/warning/information/note; omitted -> error and "
+            "warning. `from`/`to` (YYYY-MM-DD) - omitted -> the last 24 hours; at most 31 days "
+            "and `to` not before `from`, otherwise BAD_PARAMETER. `event` is an exact event "
+            "name (e.g. _$Data$_.Update) or a prefix ending in * (_$Data$_.*). `user` is a user "
+            "name. `metadata` is a full metadata object name (Catalog.<Name>, Document.<Name>; "
+            "unknown -> NOT_FOUND). Newest first, `limit` up to 50; `truncated: true` -> narrow "
+            "the period, levels or event."
+        )),
+    "list_function_tasks": ToolSpec(
+        "list_function_tasks",
+        "Список задач трекера (задачі виконавця), предметом яких є елемент довідника "
+        "MCBP_Functions, з правами поточного користувача. `function_id` — UUID елемента "
+        "MCBP_Functions (Ref.Data зі search_catalog). Найновіші першими, `limit` до 50. "
+        "Невідома функція — NOT_FOUND; база без об'єкта задач — NOT_CONFIGURED; немає права "
+        "читання — FORBIDDEN.",
+        _params(
+            {"function_id": {"type": "string", "description": "UUID елемента MCBP_Functions"},
+             "limit": {"type": "integer", "default": 50, "maximum": 50}},
+            ["function_id"],
+        ),
+        _list_function_tasks,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Lists the tracker tasks (performer tasks) whose subject is one MCBP_Functions "
+            "catalog item, under the current user's rights. `function_id` is the MCBP_Functions "
+            "item UUID (Ref.Data from search_catalog). Newest first, `limit` up to 50. Unknown "
+            "function -> NOT_FOUND; a base without a task object -> NOT_CONFIGURED; no read "
+            "right -> FORBIDDEN."
+        )),
+    "upsert_function_task": ToolSpec(
+        "upsert_function_task",
+        "Створює або змінює задачу трекера (задачу виконавця) функції MCBP_Functions напряму. "
+        "`function_id` — UUID функції. Без `task_id` — нова задача (`description` "
+        "обов'язковий; автор — поточний користувач, виконавець лишається порожнім, важливість "
+        "за замовчуванням — звичайна); з `task_id` (UUID задачі цієї функції) — зміна лише "
+        "переданих полів. `specification` — опис задачі, `deadline` — "
+        "YYYY-MM-DD або YYYY-MM-DDTHH:MM, `importance` — ім'я значення перелічення важливості; "
+        "\"\" очищає кожне з них. `executed: true` позначає задачу виконаною (задача "
+        "бізнес-процесу — TASK_IN_BUSINESS_PROCESS). `deletion_mark: true` ставить позначку "
+        "вилучення. Та сама зміна удруге нічого не змінює (`changed: false`). Невідома функція "
+        "або задача іншої функції — NOT_FOUND; база без об'єкта задач — NOT_CONFIGURED; немає "
+        "права — FORBIDDEN; задача заблокована — LOCKED.",
+        _params(
+            {"function_id": {"type": "string", "description": "UUID елемента MCBP_Functions"},
+             "task_id": {"type": "string",
+                         "description": "UUID задачі цієї функції; без нього — створення"},
+             "description": {"type": "string",
+                             "description": "Назва задачі; обов'язкова при створенні"},
+             "specification": {"type": "string",
+                               "description": "Опис задачі; \"\" очищає"},
+             "deadline": {"type": "string",
+                          "description": "Термін YYYY-MM-DD або YYYY-MM-DDTHH:MM; \"\" очищає"},
+             "importance": {"type": "string",
+                            "description": "Ім'я значення перелічення важливості; \"\" очищає"},
+             "executed": {"type": "boolean"},
+             "deletion_mark": {"type": "boolean"}},
+            ["function_id"],
+        ),
+        _upsert_function_task,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates one tracker task (performer task) of an MCBP_Functions item "
+            "natively. `function_id` is the function UUID. No `task_id` -> a new task "
+            "(`description` required; author = the current user, executor stays empty, "
+            "importance defaults to the plain value); with `task_id` (UUID of a task of THIS "
+            "function) -> only the passed fields change. "
+            "`specification` is the task text, `deadline` is YYYY-MM-DD or YYYY-MM-DDTHH:MM, "
+            "`importance` is a value name of the importance enumeration; \"\" clears each of "
+            "them. `executed: true` marks the task done (a business-process task -> "
+            "TASK_IN_BUSINESS_PROCESS). `deletion_mark: true` sets the deletion mark. Repeating "
+            "the same change changes nothing (`changed: false`). Unknown function, or a task of "
+            "another function -> NOT_FOUND; a base without a task object -> NOT_CONFIGURED; no "
+            "right -> FORBIDDEN; locked -> LOCKED."
+        )),
+    "set_register_record": ToolSpec(
+        "set_register_record",
+        "Створює або змінює ОДИН запис регістра відомостей напряму, БЕЗ MCBP Plus (лише upsert, "
+        "видалення немає). `fields` — плоский {поле: значення}: ключ запису — УСІ виміри "
+        "регістра плюс `Period` для періодичного (неповний ключ — BAD_PARAMETER); решта полів — "
+        "ресурси/реквізити, змінюються лише передані. Посилання — UUID (Ref.Data), для "
+        "складеного типу — \"ІмяМетаданих:UUID\"; перелік — ім'я значення; null очищає. Імена "
+        "полів — з describe_metadata. Регістр, підпорядкований реєстратору, — BAD_PARAMETER. "
+        "Відповідь: `created` і `changed` (старе/нове) — підтверди результат саме за ними.",
+        _params(
+            {"type": {"type": "string",
+                      "description": "Ім'я регістру відомостей (з list_metadata)"},
+             "fields": {"type": "object",
+                        "description": "{поле: значення}: усі виміри (+ Period) і ресурси/"
+                                       "реквізити, що змінюються"}},
+            ["type", "fields"],
+        ),
+        _set_register_record,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates ONE information-register record natively, WITHOUT MCBP Plus "
+            "(upsert only, no delete). `fields` is a flat {field: value}: the record key is ALL "
+            "dimensions of the register plus `Period` for a periodic one (incomplete key -> "
+            "BAD_PARAMETER); other fields are resources/attributes and only the passed ones "
+            "change. A reference is a UUID (Ref.Data), for a composite type \"MetadataName:UUID\"; "
+            "an enum is the value name (e.g. \"Active\"); null clears. Field names come from "
+            "describe_metadata. A recorder-subordinate register -> BAD_PARAMETER. The response "
+            "has `created` and `changed` (old/new) — confirm the result to the user from those."
         )),
 }
 

@@ -44,6 +44,7 @@ async def test_inventory_matches_registry_order_read_only():
         result = await client.list_tools()
     names = [t.name for t in result.tools]
     assert names == [s.name for s in tool_specs(surface="mcp", include_write=False)]
+    assert "get_event_log" in names
 
 
 async def test_inventory_matches_registry_order_with_write():
@@ -53,15 +54,37 @@ async def test_inventory_matches_registry_order_with_write():
     assert names == [s.name for s in tool_specs(surface="mcp", include_write=True)]
 
 
-async def test_gating_ten_without_flag_thirteen_with():
+async def test_gating_twelve_without_flag_twenty_with():
     async with Client(_mock_server(allow_write=False)) as client:
         without = await client.list_tools()
     async with Client(_mock_server(allow_write=True)) as client:
         with_flag = await client.list_tools()
-    assert len(without.tools) == 10
-    assert len(with_flag.tools) == 13
+    assert len(without.tools) == 12
+    assert len(with_flag.tools) == 20
     added = {t.name for t in with_flag.tools} - {t.name for t in without.tools}
-    assert added == {"write_object", "save_context", "patch_object"}
+    assert added == {"write_object", "save_context", "patch_object", "set_function_status",
+                     "upsert_function", "upsert_idea", "upsert_function_task",
+                     "set_register_record"}
+
+
+async def test_set_register_record_call_in_mock_mode():
+    async with Client(_mock_server(allow_write=True)) as client:
+        result = await client.call_tool(
+            "set_register_record",
+            {"type": "MCBP_StatusFunctions", "fields": {"Function": "uuid-1"}},
+        )
+    assert result.is_error is not True
+    assert '"created": true' in result.content[0].text
+
+
+async def test_set_register_record_unknown_without_write_flag():
+    async with Client(_mock_server(allow_write=False)) as client:
+        result = await client.call_tool(
+            "set_register_record",
+            {"type": "MCBP_StatusFunctions", "fields": {"Function": "uuid-1"}},
+        )
+    assert result.is_error is True
+    assert "Unknown tool" in result.content[0].text
 
 
 # --- input_schema passed through untouched ---
