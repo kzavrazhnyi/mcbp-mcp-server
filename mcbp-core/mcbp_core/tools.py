@@ -181,6 +181,10 @@ async def _list_function_tasks(c: MCBPClient, a: dict) -> Any:
     return await c.list_function_tasks(a["function_id"], limit=a.get("limit", 50))
 
 
+async def _get_client_orders(c: MCBPClient, a: dict) -> Any:
+    return await c.get_client_orders(a["login"], order_id=a.get("order_id"))
+
+
 async def _upsert_function_task(c: MCBPClient, a: dict) -> Any:
     return await c.upsert_function_task(
         a["function_id"], a.get("task_id"), description=a.get("description"),
@@ -941,6 +945,34 @@ TOOLS: dict[str, ToolSpec] = {
             "an enum is the value name (e.g. \"Active\"); null clears. Field names come from "
             "describe_metadata. A recorder-subordinate register -> BAD_PARAMETER. The response "
             "has `created` and `changed` (old/new) — confirm the result to the user from those."
+        )),
+    "get_client_orders": ToolSpec(
+        "get_client_orders",
+        "Замовлення покупця підтвердженого клієнта (лише читання) з правами поточного "
+        "користувача. `login` — телефон або e-mail клієнта. Без `order_id` — до 50 найновіших "
+        "замовлень без рядків: номер, дата, сума, валюта, стан, проведено, сплачено (`paid`), "
+        "до сплати (`to_pay`); null — у документа немає такого реквізиту. З `order_id` (UUID "
+        "замовлення зі списку) — одне замовлення з товарами `items`. Логін невідомий, не "
+        "підтверджений або без дозволеного контрагента — NOT_CONFIRMED; порожній логін чи "
+        "`order_id` не UUID — BAD_PARAMETER; замовлення не цього клієнта — NOT_FOUND; база без "
+        "документа замовлення — NOT_CONFIGURED; немає права читання — FORBIDDEN.",
+        _params(
+            {"login": {"type": "string", "description": "Телефон або e-mail клієнта"},
+             "order_id": {"type": "string",
+                          "description": "UUID замовлення зі списку; без нього — список"}},
+            ["login"],
+        ),
+        _get_client_orders,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Sales orders of a confirmed client (read-only) under the current user's rights. "
+            "`login` is the client's phone or e-mail. Without `order_id` -> up to 50 newest "
+            "orders without lines: number, date, amount, currency, state, posted, `paid`, "
+            "`to_pay`; null means the document has no such attribute. With `order_id` (an "
+            "order UUID from the list) -> one order with its `items`. Unknown, unconfirmed "
+            "login or no allowed counterparty -> NOT_CONFIRMED; blank login or non-UUID "
+            "`order_id` -> BAD_PARAMETER; an order of another client -> NOT_FOUND; a base "
+            "without an order document -> NOT_CONFIGURED; no read right -> FORBIDDEN."
         )),
 }
 

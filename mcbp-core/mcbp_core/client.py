@@ -40,6 +40,7 @@ from mcbp_core.errors import (
     LicenseRequiredError,
     MCBPError,
     NotConfiguredError,
+    NotConfirmedError,
     NotFoundError,
     ParameterError,
     PlusRequiredError,
@@ -65,6 +66,7 @@ _ERROR_CODE_MAP: dict[str, type[MCBPError]] = {
     "BAD_PARAMETER": ParameterError,
     "NOT_FOUND": NotFoundError,
     "FORBIDDEN": ForbiddenError,
+    "NOT_CONFIRMED": NotConfirmedError,
     "WRITE_FAILED": WriteFailedError,
     "PLUS_REQUIRED": PlusRequiredError,
     "CONVERSION_NOT_CONFIGURED": ConversionNotConfiguredError,
@@ -633,6 +635,22 @@ class MCBPClient:
         if limit is not None:
             params["limit"] = limit
         return await self._request("GET", "/ai/v1/eventlog", params=params)
+
+    async def get_client_orders(self, login: str, order_id: str | None = None) -> dict:
+        """Sales orders of a confirmed client `login` (phone or e-mail), under the caller's
+        rights. Without `order_id` - {"data": [rows]}, newest 50, no lines; with it - one order
+        {"data": {...row, "items": [...]}}. Unconfirmed login -> 403 NOT_CONFIRMED
+        (NotConfirmedError, a ForbiddenError); an id not among this client's orders ->
+        NotFoundError."""
+        if not isinstance(login, str) or not login.strip():
+            raise ParameterError("login is required: the client's phone or e-mail")
+        params: dict[str, Any] = {"login": login.strip()}
+        if order_id is not None:
+            try:
+                params["id"] = str(uuid.UUID(str(order_id).strip()))
+            except ValueError:
+                raise ParameterError(f"order_id must be an order UUID, got {order_id!r}") from None
+        return await self._request("GET", "/ai/v1/client/orders", params=params)
 
     async def push_ai_context(self, body: dict) -> dict:
         return await self._request("POST", "/ai/v1/ai/context", json=body)
@@ -1634,11 +1652,54 @@ def _mock_event_log(kw: dict) -> dict:
             "to": f"{date_to or '2026-08-01'} 23:59:59"}
 
 
+_MOCK_CLIENT_ORDERS = (
+    {"id": "7c1e0a52-0000-4000-8000-000000000002", "number": "00000000012",
+     "date": "2026-10-18 14:05:00", "amount": 1250.0, "currency": "UAH",
+     "state": "В роботі", "posted": True, "paid": 500.0, "to_pay": 750.0},
+    {"id": "7c1e0a52-0000-4000-8000-000000000001", "number": "00000000011",
+     "date": "2026-10-10 09:30:00", "amount": 300.0, "currency": "UAH",
+     "state": "Виконано", "posted": True, "paid": 300.0, "to_pay": 0.0},
+)
+_MOCK_CLIENT_ORDER_ITEMS = {
+    "7c1e0a52-0000-4000-8000-000000000002": [
+        {"product": {"id": "5b2d9f10-0000-4000-8000-000000000001", "type": "Номенклатура",
+                     "name": "Петля меблева"}, "quantity": 10, "price": 75.0, "amount": 750.0},
+        {"product": {"id": "5b2d9f10-0000-4000-8000-000000000002", "type": "Номенклатура",
+                     "name": "Ручка-скоба 128 мм"}, "quantity": 5, "price": 100.0,
+         "amount": 500.0},
+    ],
+    "7c1e0a52-0000-4000-8000-000000000001": [
+        {"product": {"id": "5b2d9f10-0000-4000-8000-000000000003", "type": "Номенклатура",
+                     "name": "Шуруп 4x16"}, "quantity": 100, "price": 3.0, "amount": 300.0},
+    ],
+}
+
+
+def _mock_client_orders(kw: dict) -> dict:
+    params = kw.get("params") or {}
+    if not str(params.get("login") or "").strip():
+        raise ParameterError("Parameter 'login' is required")
+    raw_id = params.get("id")
+    if raw_id is None:
+        return {"data": [dict(r) for r in _MOCK_CLIENT_ORDERS]}
+    try:
+        order_id = str(uuid.UUID(str(raw_id)))
+    except ValueError:
+        raise ParameterError("Parameter 'id' must be an order UUID") from None
+    row = next((r for r in _MOCK_CLIENT_ORDERS if r["id"] == order_id), None)
+    if row is None:
+        raise NotFoundError(f"Order {order_id} not found among this client's orders")
+    items = [{**i, "product": dict(i["product"])} for i in _MOCK_CLIENT_ORDER_ITEMS[order_id]]
+    return {"data": {**row, "items": items}}
+
+
 def _mock_response(method: str, path: str, kw: dict) -> Any:
     if path.endswith("/health"):
         return {"status": "ok", "service": "MCBP_AI", "key": True, "mock": True}
     if path.rstrip("/") == "ai/v1/eventlog":
         return _mock_event_log(kw)
+    if path.rstrip("/") == "ai/v1/client/orders":
+        return _mock_client_orders(kw)
     if method == "POST" and path.rstrip("/") == "ai/v1/functions":
         return _mock_function_upsert(kw)
     if method == "POST" and path.startswith("ai/v1/functions/") and path.endswith("/status"):

@@ -104,7 +104,7 @@ def test_tool_is_read_only_mcp_only_and_appended_last():
     spec = TOOLS["get_event_log"]
     assert spec.read_only is True
     assert spec.surfaces == frozenset({"mcp"})
-    assert list(TOOLS).index("get_event_log") == len(TOOLS) - 4
+    assert list(TOOLS).index("get_event_log") == len(TOOLS) - 5
     assert list(TOOLS)[0] == "search_catalog"
     assert spec.parameters["required"] == []
     assert spec in tool_specs(surface="mcp")

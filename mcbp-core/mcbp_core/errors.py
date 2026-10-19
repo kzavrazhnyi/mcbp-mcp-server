@@ -84,6 +84,14 @@ class ForbiddenError(MCBPError):
     http_status = 403
 
 
+class NotConfirmedError(ForbiddenError):
+    """`/client/*`: the client login is unknown, not confirmed, or has no allowed counterparty.
+    A `ForbiddenError` subclass so 403 handling stays one branch, but the model sees
+    `NOT_CONFIRMED` and does not mistake it for a missing right."""
+
+    code = "NOT_CONFIRMED"
+
+
 class NotConnectedError(MCBPError):
     """No active connection to BAS — the host application must connect before issuing requests
     (`MCBPClient.startup()`, or whatever login step that host exposes)."""
