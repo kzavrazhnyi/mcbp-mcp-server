@@ -108,6 +108,23 @@ async def test_sends_json_body_and_omits_unset_fields():
 
 
 @respx.mock
+async def test_last_name_sent_only_when_given():
+    route = respx.post(_URL).mock(return_value=httpx.Response(200, json={"data": {}}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.start_client_auth("380974553663", confirmed=True, chat_id=42,
+                                       name="Іван Петренко", last_name="Петренко")
+        await client.start_client_auth("380974553663", confirmed=True, chat_id=42,
+                                       name="Іван", last_name=None)
+    finally:
+        await client.shutdown()
+    bodies = [json.loads(call.request.content) for call in route.calls]
+    assert bodies[0]["last_name"] == "Петренко"
+    assert "last_name" not in bodies[1]
+
+
+@respx.mock
 async def test_post_is_not_retried_on_503():
     route = respx.post(_URL).mock(return_value=httpx.Response(503, json={"error": {
         "code": "UNAVAILABLE", "message": "busy"}}))

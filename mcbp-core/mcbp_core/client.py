@@ -655,7 +655,8 @@ class MCBPClient:
 
     async def start_client_auth(self, login: str, *, confirmed: bool,
                                 chat_id: int | str | None = None,
-                                name: str | None = None) -> dict:
+                                name: str | None = None,
+                                last_name: str | None = None) -> dict:
         """POST /ai/v1/client/auth/start — a service route for the backend, NOT a model tool.
         `confirmed=False` only looks the login up (no write); `confirmed=True` binds it to the one
         matching contact and saves the record: with `chat_id` and a contact the status becomes
@@ -673,6 +674,8 @@ class MCBPClient:
             body["chat_id"] = chat_id
         if name is not None:
             body["name"] = name
+        if last_name is not None:
+            body["last_name"] = last_name
         return await self._request("POST", "/ai/v1/client/auth/start", json=body)
 
     async def push_ai_context(self, body: dict) -> dict:
