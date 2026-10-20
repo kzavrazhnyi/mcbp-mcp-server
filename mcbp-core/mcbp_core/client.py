@@ -369,7 +369,8 @@ class MCBPClient:
         is_tips = path.startswith("ai/v1/tips")
         is_dash = path.startswith("ai/v1/dashboard/layout")
         is_chat = path.startswith("ai/v1/chats") or is_tips or is_dash
-        brief = _kw_brief(kw, chat=is_chat)
+        # client/auth bodies carry the client's phone/e-mail and Telegram chat id: log shapes only.
+        brief = _kw_brief(kw, chat=is_chat or path.startswith("ai/v1/client/auth"))
         if self._mock:
             log.info("[mock] %s %s %s", method, path, brief)
             if is_dash:
@@ -651,6 +652,28 @@ class MCBPClient:
             except ValueError:
                 raise ParameterError(f"order_id must be an order UUID, got {order_id!r}") from None
         return await self._request("GET", "/ai/v1/client/orders", params=params)
+
+    async def start_client_auth(self, login: str, *, confirmed: bool,
+                                chat_id: int | str | None = None,
+                                name: str | None = None) -> dict:
+        """POST /ai/v1/client/auth/start — a service route for the backend, NOT a model tool.
+        `confirmed=False` only looks the login up (no write); `confirmed=True` binds it to the one
+        matching contact and saves the record: with `chat_id` and a contact the status becomes
+        Active (never over Disabled), otherwise a new record is Pending. A `chat_id` different
+        from the one already stored is not saved: the record goes Pending and the reply carries
+        `chat_id_conflict: true`. Returns {"data": {login, known, status, chat_id, name, contact,
+        counterparty, contact_created, allowed, matches, chat_id_conflict}}. POST is never
+        retried."""
+        if not isinstance(login, str) or not login.strip():
+            raise ParameterError("login is required: the client's phone or e-mail")
+        if not isinstance(confirmed, bool):
+            raise ParameterError(f"confirmed must be true or false, got {confirmed!r}")
+        body: dict[str, Any] = {"login": login.strip(), "confirmed": confirmed}
+        if chat_id is not None:
+            body["chat_id"] = chat_id
+        if name is not None:
+            body["name"] = name
+        return await self._request("POST", "/ai/v1/client/auth/start", json=body)
 
     async def push_ai_context(self, body: dict) -> dict:
         return await self._request("POST", "/ai/v1/ai/context", json=body)
@@ -1693,9 +1716,40 @@ def _mock_client_orders(kw: dict) -> dict:
     return {"data": {**row, "items": items}}
 
 
+def _mock_client_auth_start(kw: dict) -> dict:
+    body = kw.get("json") or {}
+    login = str(body.get("login") or "").strip()
+    if not login:
+        raise ParameterError("login is required: a phone number or an e-mail")
+    confirmed = body.get("confirmed")
+    if not isinstance(confirmed, bool):
+        raise ParameterError("confirmed is required: true or false")
+    login = login.lower() if "@" in login else "".join(ch for ch in login if ch in "0123456789")
+    result: dict[str, Any] = {
+        "login": login, "known": False, "status": None, "chat_id": None, "name": None,
+        "contact": None, "counterparty": None, "contact_created": False, "allowed": False,
+        "matches": None, "chat_id_conflict": False,
+    }
+    if not confirmed:
+        return {"data": result}
+    chat_id = body.get("chat_id")
+    chat_text = None if chat_id is None else str(chat_id).strip() or None
+    result.update(
+        known=True, matches=1, chat_id=chat_text, name=body.get("name") or None,
+        status="Active" if chat_text else "Pending",
+        contact={"id": "4a6c8e20-0000-4000-8000-000000000001", "type": "КонтактныеЛица",
+                 "name": "Контактна особа (mock)"},
+        counterparty={"id": "e3f1d9b6-0000-4000-8000-000000000002", "type": "Контрагенты",
+                      "name": "Альфа Трейд, ТОВ"},
+    )
+    return {"data": result}
+
+
 def _mock_response(method: str, path: str, kw: dict) -> Any:
     if path.endswith("/health"):
         return {"status": "ok", "service": "MCBP_AI", "key": True, "mock": True}
+    if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/start":
+        return _mock_client_auth_start(kw)
     if path.rstrip("/") == "ai/v1/eventlog":
         return _mock_event_log(kw)
     if path.rstrip("/") == "ai/v1/client/orders":

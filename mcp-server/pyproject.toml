@@ -14,7 +14,7 @@ dependencies = [
     # name was unclaimed — publish mcbp-core first, then this constraint is what keeps the pair
     # in step. `tool.uv.sources` below only redirects the LOCAL checkout; it is not part of the
     # published wheel's metadata.
-    "mcbp-core>=0.1.18,<0.2",
+    "mcbp-core>=0.1.19,<0.2",
     "anyio>=4.0",
 ]
 
