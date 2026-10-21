@@ -637,11 +637,14 @@ class MCBPClient:
             params["limit"] = limit
         return await self._request("GET", "/ai/v1/eventlog", params=params)
 
-    async def get_client_orders(self, login: str, order_id: str | None = None) -> dict:
+    async def get_client_orders(self, login: str, order_id: str | None = None,
+                                counterparty: str | None = None) -> dict:
         """Sales orders of a confirmed client `login` (phone or e-mail), under the caller's
-        rights. Without `order_id` - {"data": [rows]}, newest 50, no lines; with it - one order
-        {"data": {...row, "items": [...]}}. Unconfirmed login -> 403 NOT_CONFIRMED
-        (NotConfirmedError, a ForbiddenError); an id not among this client's orders ->
+        rights. Without `order_id` - {"data": [rows], "counterparties": [...]}, newest 50, no
+        lines; with it - one order {"data": {...row, "items": [...]}}. Rows carry `counterparty`
+        {id, type, name}; `counterparty` (UUID) narrows to one of the client's allowed
+        counterparties. Older services omit both fields. Unconfirmed login -> 403 NOT_CONFIRMED
+        (NotConfirmedError, a ForbiddenError); an id or counterparty not among this client's ->
         NotFoundError."""
         if not isinstance(login, str) or not login.strip():
             raise ParameterError("login is required: the client's phone or e-mail")
@@ -651,6 +654,13 @@ class MCBPClient:
                 params["id"] = str(uuid.UUID(str(order_id).strip()))
             except ValueError:
                 raise ParameterError(f"order_id must be an order UUID, got {order_id!r}") from None
+        if counterparty is not None:
+            try:
+                params["counterparty"] = str(uuid.UUID(str(counterparty).strip()))
+            except ValueError:
+                raise ParameterError(
+                    f"counterparty must be a counterparty UUID, got {counterparty!r}"
+                ) from None
         return await self._request("GET", "/ai/v1/client/orders", params=params)
 
     async def start_client_auth(self, login: str, *, confirmed: bool,
@@ -1678,13 +1688,21 @@ def _mock_event_log(kw: dict) -> dict:
             "to": f"{date_to or '2026-08-01'} 23:59:59"}
 
 
+_MOCK_CLIENT_COUNTERPARTIES = (
+    {"id": "e3f1d9b6-0000-4000-8000-000000000002", "type": "Контрагенты",
+     "name": "Альфа Трейд, ТОВ"},
+    {"id": "e3f1d9b6-0000-4000-8000-000000000003", "type": "Контрагенты",
+     "name": "Бета Меблі, ФОП"},
+)
 _MOCK_CLIENT_ORDERS = (
     {"id": "7c1e0a52-0000-4000-8000-000000000002", "number": "00000000012",
      "date": "2026-10-18 14:05:00", "amount": 1250.0, "currency": "UAH",
-     "state": "В роботі", "posted": True, "paid": 500.0, "to_pay": 750.0},
+     "state": "В роботі", "posted": True, "paid": 500.0, "to_pay": 750.0,
+     "counterparty": _MOCK_CLIENT_COUNTERPARTIES[0]},
     {"id": "7c1e0a52-0000-4000-8000-000000000001", "number": "00000000011",
      "date": "2026-10-10 09:30:00", "amount": 300.0, "currency": "UAH",
-     "state": "Виконано", "posted": True, "paid": 300.0, "to_pay": 0.0},
+     "state": "Виконано", "posted": True, "paid": 300.0, "to_pay": 0.0,
+     "counterparty": _MOCK_CLIENT_COUNTERPARTIES[1]},
 )
 _MOCK_CLIENT_ORDER_ITEMS = {
     "7c1e0a52-0000-4000-8000-000000000002": [
@@ -1705,18 +1723,29 @@ def _mock_client_orders(kw: dict) -> dict:
     params = kw.get("params") or {}
     if not str(params.get("login") or "").strip():
         raise ParameterError("Parameter 'login' is required")
+    rows = list(_MOCK_CLIENT_ORDERS)
+    raw_cp = params.get("counterparty")
+    if raw_cp is not None:
+        try:
+            cp_id = str(uuid.UUID(str(raw_cp)))
+        except ValueError:
+            raise ParameterError("Parameter 'counterparty' must be a counterparty UUID") from None
+        if not any(c["id"] == cp_id for c in _MOCK_CLIENT_COUNTERPARTIES):
+            raise NotFoundError(f"Counterparty {cp_id} is not among this client's")
+        rows = [r for r in rows if r["counterparty"]["id"] == cp_id]
     raw_id = params.get("id")
     if raw_id is None:
-        return {"data": [dict(r) for r in _MOCK_CLIENT_ORDERS]}
+        return {"data": [{**r, "counterparty": dict(r["counterparty"])} for r in rows],
+                "counterparties": [dict(c) for c in _MOCK_CLIENT_COUNTERPARTIES]}
     try:
         order_id = str(uuid.UUID(str(raw_id)))
     except ValueError:
         raise ParameterError("Parameter 'id' must be an order UUID") from None
-    row = next((r for r in _MOCK_CLIENT_ORDERS if r["id"] == order_id), None)
+    row = next((r for r in rows if r["id"] == order_id), None)
     if row is None:
         raise NotFoundError(f"Order {order_id} not found among this client's orders")
     items = [{**i, "product": dict(i["product"])} for i in _MOCK_CLIENT_ORDER_ITEMS[order_id]]
-    return {"data": {**row, "items": items}}
+    return {"data": {**row, "counterparty": dict(row["counterparty"]), "items": items}}
 
 
 def _mock_client_auth_start(kw: dict) -> dict:
