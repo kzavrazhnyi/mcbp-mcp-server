@@ -123,8 +123,8 @@
   </p>
   <ul class="facts">
     <li>Python 3.11.9</li>
-    <li>mcbp 0.2.4</li>
-    <li>mcbp-core 0.1.17</li>
+    <li>mcbp 0.2.5</li>
+    <li>mcbp-core 0.1.18</li>
     <li>~95 МБ</li>
     <li>Windows x64</li>
   </ul>
@@ -190,18 +190,27 @@
       Кожному клієнтові — свій токен, зіставлений з обліковкою BAS. Так у журналі реєстрації
       бази дії йдуть від імені конкретної людини, а не спільного службового запису.
     </p>
+    <p>Спершу увімкніть реєстр у <code>server.env</code>:</p>
+<pre><code>MCP_TOKENS_FILE=tokens.toml
+MCP_REQUIRE_AUTH=1</code></pre>
     <ol>
-      <li>Запустіть <code>new-token.cmd</code> — надрукує випадковий рядок. По одному на клієнта.</li>
-      <li>Скопіюйте <code>tokens.example.toml</code> у <code>tokens.toml</code> і замініть значення:</li>
+      <li>Запустіть <code>new-token.cmd</code> і введіть імʼя користувача BAS та пароль (пароль
+        не відображається; порожній — допустимий).</li>
+      <li>Скрипт одним запитом перевіряє обліковку в базі з <code>ONEC_BASE_URL</code>. Хибний
+        пароль — нічого не записано. База недоступна — спитає, чи писати без перевірки (типово «ні»).</li>
+      <li>Він дописує запис <code>[[users]]</code> у <code>tokens.toml</code> (створить файл, якщо його
+        немає), перевіряє, що файл читається сервером, і друкує готову команду
+        <code>claude mcp add ... --header "Authorization: Bearer ..."</code>. Токен показується
+        один раз — по одному на клієнта.</li>
+      <li>Перезапустіть <code>start.cmd</code>, а на клієнті після <code>claude mcp add</code>
+        відкрийте нову сесію Claude Code.</li>
     </ol>
+    <p>Формат запису, якщо правите файл руками (зразок — <code>tokens.example.toml</code>):</p>
 <pre><code>[[users]]
-token = "&lt;рядок з new-token.cmd&gt;"
+token = "&lt;випадковий рядок&gt;"
 onec_user = "Директор-Корнієнко"
 onec_password = ""
 label = "Директор"</code></pre>
-    <p>Далі увімкніть реєстр у <code>server.env</code>:</p>
-<pre><code>MCP_TOKENS_FILE=tokens.toml
-MCP_REQUIRE_AUTH=1</code></pre>
     <p>
       <code>MCP_REQUIRE_AUTH=1</code> означає: запит без заголовка <code>Authorization</code>
       відхиляється (400), а не виконується під службовою обліковкою. Разом із доступом по мережі

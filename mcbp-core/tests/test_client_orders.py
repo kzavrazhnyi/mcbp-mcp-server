@@ -9,8 +9,12 @@ from mcbp_core.client import ConnectionConfig, MCBPClient
 from mcbp_core.errors import ForbiddenError, NotConfirmedError, NotFoundError, ParameterError
 from mcbp_core.tools import TOOLS, tool_specs
 
-_ROW_KEYS = {"id", "number", "date", "amount", "currency", "state", "posted", "paid", "to_pay"}
+_ROW_KEYS = {"id", "number", "date", "amount", "currency", "state", "posted", "paid", "to_pay",
+             "counterparty"}
 _ORDER_ID = "7c1e0a52-0000-4000-8000-000000000002"
+_CP_ALFA = "e3f1d9b6-0000-4000-8000-000000000002"
+_CP_BETA = "e3f1d9b6-0000-4000-8000-000000000003"
+_FOREIGN = "00000000-0000-4000-8000-000000000000"
 _URL = "http://test/ai/v1/client/orders"
 
 
@@ -31,6 +35,37 @@ async def test_mock_list_has_row_shape_and_no_items():
     for row in result["data"]:
         assert set(row) == _ROW_KEYS
     assert result["data"][0]["date"] == "2026-10-18 14:05:00"
+    assert {r["counterparty"]["id"] for r in result["data"]} == {_CP_ALFA, _CP_BETA}
+    assert [c["id"] for c in result["counterparties"]] == [_CP_ALFA, _CP_BETA]
+    for cp in result["counterparties"]:
+        assert set(cp) == {"id", "type", "name"}
+
+
+async def test_mock_filters_by_counterparty_and_keeps_all_allowed_in_envelope():
+    client = await _mock_client()
+    result = await client.get_client_orders("0974553663", counterparty=_CP_BETA.upper())
+    assert [r["counterparty"]["id"] for r in result["data"]] == [_CP_BETA]
+    assert len(result["counterparties"]) == 2
+
+
+async def test_mock_foreign_counterparty_is_not_found():
+    client = await _mock_client()
+    with pytest.raises(NotFoundError, match="counterparty|Counterparty"):
+        await client.get_client_orders("0974553663", counterparty=_FOREIGN)
+
+
+async def test_mock_order_outside_counterparty_filter_is_not_found():
+    client = await _mock_client()
+    with pytest.raises(NotFoundError, match="Order"):
+        await client.get_client_orders("0974553663", order_id=_ORDER_ID, counterparty=_CP_BETA)
+
+
+async def test_mock_mutating_result_does_not_leak_into_the_next_call():
+    client = await _mock_client()
+    first = await client.get_client_orders("0974553663")
+    first["data"][0]["counterparty"]["name"] = "changed"
+    second = await client.get_client_orders("0974553663")
+    assert second["data"][0]["counterparty"]["name"] != "changed"
 
 
 async def test_mock_one_order_has_items():
@@ -39,6 +74,7 @@ async def test_mock_one_order_has_items():
     order = result["data"]
     assert set(order) == _ROW_KEYS | {"items"}
     assert order["id"] == _ORDER_ID
+    assert order["counterparty"]["id"] == _CP_ALFA
     assert set(order["items"][0]) == {"product", "quantity", "price", "amount"}
     assert set(order["items"][0]["product"]) == {"id", "type", "name"}
 
@@ -47,7 +83,7 @@ async def test_mock_unknown_order_is_not_found():
     client = await _mock_client()
     with pytest.raises(NotFoundError):
         await client.get_client_orders("0974553663",
-                                       order_id="00000000-0000-4000-8000-000000000000")
+                                       order_id=_FOREIGN)
 
 
 @pytest.mark.parametrize("login", ["", "   "])
@@ -75,6 +111,73 @@ async def test_non_uuid_order_id_is_parameter_error_before_http():
         finally:
             await client.shutdown()
         assert not route.called
+
+
+@pytest.mark.parametrize("counterparty", ["123", "", "not-a-uuid"])
+async def test_non_uuid_counterparty_is_parameter_error_before_http(counterparty):
+    client = _live_client()
+    with respx.mock(assert_all_called=False) as router:
+        route = router.get(_URL)
+        await client.startup()
+        try:
+            with pytest.raises(ParameterError, match="counterparty"):
+                await client.get_client_orders("a@b.ua", counterparty=counterparty)
+        finally:
+            await client.shutdown()
+        assert not route.called
+
+
+@respx.mock
+async def test_sends_counterparty_as_normalised_query_param():
+    route = respx.get(_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.get_client_orders("0974553663", counterparty=f" {_CP_ALFA.upper()} ")
+        assert dict(route.calls[0].request.url.params) == {"login": "0974553663",
+                                                           "counterparty": _CP_ALFA}
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_old_service_without_counterparty_fields_passes_through():
+    body = {"data": [{"id": _ORDER_ID, "number": "1", "date": "2026-10-18 14:05:00",
+                      "amount": 1.0, "currency": "UAH", "state": None, "posted": True,
+                      "paid": None, "to_pay": None}]}
+    respx.get(_URL).mock(return_value=httpx.Response(200, json=body))
+    client = _live_client()
+    await client.startup()
+    try:
+        assert await client.get_client_orders("0974553663") == body
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_server_side_bad_counterparty_422_is_parameter_error():
+    respx.get(_URL).mock(return_value=httpx.Response(422, json={"error": {
+        "code": "BAD_PARAMETER", "message": "Parameter 'counterparty' must be a UUID"}}))
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(ParameterError, match="counterparty"):
+            await client.get_client_orders("0974553663", counterparty=_CP_ALFA)
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_foreign_counterparty_404_is_not_found():
+    respx.get(_URL).mock(return_value=httpx.Response(404, json={"error": {
+        "code": "NOT_FOUND", "message": "counterparty is not among this client's"}}))
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(NotFoundError, match="counterparty"):
+            await client.get_client_orders("0974553663", counterparty=_FOREIGN)
+    finally:
+        await client.shutdown()
 
 
 @respx.mock

@@ -56,11 +56,11 @@ sudo mkdir -p /opt/mcbp-mcp && sudo chown mcbp:mcbp /opt/mcbp-mcp
 sudo -u mcbp python3.11 -m venv /opt/mcbp-mcp/.venv
 ```
 
-The distribution is named `mcbp` and is published on **PyPI** (current: `mcbp 0.2.4`,
-`mcbp-core 0.1.17`).
+The distribution is named `mcbp` and is published on **PyPI** (current: `mcbp 0.2.5`,
+`mcbp-core 0.1.18`).
 
 ```bash
-sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install "mcbp[http]==0.2.4" "mcbp-core==0.1.17"
+sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install "mcbp[http]==0.2.5" "mcbp-core==0.1.18"
 ```
 
 - **Pin both versions.** A bare `mcbp[http]` resolves to whatever is newest, which is not always
@@ -74,7 +74,7 @@ To install that candidate, `install-ubuntu.sh --testpypi`, or by hand:
 sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install \
   --index-url https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  "mcbp[http]==0.2.4" "mcbp-core==0.1.17"
+  "mcbp[http]==0.2.5" "mcbp-core==0.1.18"
 ```
 
 - **`--extra-index-url https://pypi.org/simple/` is mandatory.** The runtime dependencies —
@@ -277,6 +277,6 @@ What changes. Nothing is rebuilt.
 | Every tool 403 `KEY_MISMATCH` while `health` works | Infobase key does not match the publication — a BAS-side issue; startup logs a warning for it. |
 | `404` on every tool, `health` fine | `ONEC_BASE_URL` still carries the `/ai/v1` suffix. |
 | `No matching distribution found for httpx` (or mcp/starlette/uvicorn) | The TestPyPI install is missing `--extra-index-url https://pypi.org/simple/`. |
-| `mcbp-http: command not found` | Version 0.1.0 got installed — it predates the HTTP transport. Pin `==0.2.4`. |
+| `mcbp-http: command not found` | Version 0.1.0 got installed — it predates the HTTP transport. Pin `==0.2.5`. |
 | Every `/mcp` request is `404 Not Found` (plain text), `/healthz` is `ok`, even without a token | The env file has CRLF line endings, so `MCP_HTTP_PATH` is `/mcp\r`. `sed -i 's/\r$//' /etc/mcbp-mcp/<base>.env` and restart. |
 | Edits to the checkout have no effect | Fallback install only: `mcbp-core` went in without `-e`. |
