@@ -182,7 +182,8 @@ async def _list_function_tasks(c: MCBPClient, a: dict) -> Any:
 
 
 async def _get_client_orders(c: MCBPClient, a: dict) -> Any:
-    return await c.get_client_orders(a["login"], order_id=a.get("order_id"))
+    return await c.get_client_orders(a["login"], order_id=a.get("order_id"),
+                                     counterparty=a.get("counterparty"))
 
 
 async def _upsert_function_task(c: MCBPClient, a: dict) -> Any:
@@ -952,14 +953,20 @@ TOOLS: dict[str, ToolSpec] = {
         "користувача. `login` — телефон або e-mail клієнта. Без `order_id` — до 50 найновіших "
         "замовлень без рядків: номер, дата, сума, валюта, стан, проведено, сплачено (`paid`), "
         "до сплати (`to_pay`); null — у документа немає такого реквізиту. З `order_id` (UUID "
-        "замовлення зі списку) — одне замовлення з товарами `items`. Логін невідомий, не "
+        "замовлення зі списку) — одне замовлення з товарами `items`. Необов'язковий "
+        "`counterparty` (UUID) звужує до одного з дозволених контрагентів клієнта; їхні id — у "
+        "полі `counterparties` списку без фільтра; чужий UUID — NOT_FOUND. Логін невідомий, не "
         "підтверджений або без дозволеного контрагента — NOT_CONFIRMED; порожній логін чи "
         "`order_id` не UUID — BAD_PARAMETER; замовлення не цього клієнта — NOT_FOUND; база без "
         "документа замовлення — NOT_CONFIGURED; немає права читання — FORBIDDEN.",
         _params(
             {"login": {"type": "string", "description": "Телефон або e-mail клієнта"},
              "order_id": {"type": "string",
-                          "description": "UUID замовлення зі списку; без нього — список"}},
+                          "description": "UUID замовлення зі списку; без нього — список"},
+             "counterparty": {"type": "string",
+                              "description": "Необов'язково: UUID дозволеного контрагента "
+                                             "клієнта (з `counterparties` списку без "
+                                             "фільтра); чужий — NOT_FOUND"}},
             ["login"],
         ),
         _get_client_orders,
@@ -969,7 +976,10 @@ TOOLS: dict[str, ToolSpec] = {
             "`login` is the client's phone or e-mail. Without `order_id` -> up to 50 newest "
             "orders without lines: number, date, amount, currency, state, posted, `paid`, "
             "`to_pay`; null means the document has no such attribute. With `order_id` (an "
-            "order UUID from the list) -> one order with its `items`. Unknown, unconfirmed "
+            "order UUID from the list) -> one order with its `items`. Optional `counterparty` "
+            "(UUID) narrows to one of the client's allowed counterparties; their ids come from "
+            "the `counterparties` envelope of the unfiltered list; a foreign UUID -> NOT_FOUND. "
+            "Unknown, unconfirmed "
             "login or no allowed counterparty -> NOT_CONFIRMED; blank login or non-UUID "
             "`order_id` -> BAD_PARAMETER; an order of another client -> NOT_FOUND; a base "
             "without an order document -> NOT_CONFIGURED; no read right -> FORBIDDEN."
