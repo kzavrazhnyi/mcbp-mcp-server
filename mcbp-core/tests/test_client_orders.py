@@ -240,7 +240,9 @@ def test_tool_is_read_only_mcp_only_and_appended_last():
     assert list(TOOLS)[-1] == "get_client_orders"
     assert list(TOOLS)[0] == "search_catalog"
     assert spec.parameters["required"] == ["login"]
-    assert set(spec.parameters["properties"]) == {"login", "order_id"}
+    assert set(spec.parameters["properties"]) == {"login", "order_id", "counterparty"}
+    assert spec.parameters["properties"]["counterparty"]["type"] == "string"
+    assert "counterparties" in spec.description_en and "NOT_FOUND" in spec.description_en
     assert spec in tool_specs(surface="mcp")
     assert spec not in tool_specs(surface="backend", include_write=True)
 
@@ -253,6 +255,46 @@ async def test_executor_passes_arguments_by_name():
         client, {"login": "0974553663", "order_id": _ORDER_ID},
     )
     assert one["data"]["id"] == _ORDER_ID and one["data"]["items"]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        ({"login": "0974553663"}, {"order_id": None, "counterparty": None}),
+        ({"login": "0974553663", "counterparty": _CP_BETA},
+         {"order_id": None, "counterparty": _CP_BETA}),
+        ({"login": "0974553663", "order_id": _ORDER_ID, "counterparty": _CP_ALFA},
+         {"order_id": _ORDER_ID, "counterparty": _CP_ALFA}),
+    ],
+)
+async def test_executor_forwards_counterparty_only_when_given(monkeypatch, args, expected):
+    client = _live_client()
+    seen: list[tuple] = []
+
+    async def fake(login, order_id=None, counterparty=None):
+        seen.append((login, {"order_id": order_id, "counterparty": counterparty}))
+        return {"data": []}
+
+    monkeypatch.setattr(client, "get_client_orders", fake)
+    await TOOLS["get_client_orders"].executor(client, args)
+    assert seen == [("0974553663", expected)]
+
+
+async def test_executor_counterparty_reaches_the_query_string():
+    client = _live_client()
+    await client.startup()
+    try:
+        with respx.mock(assert_all_called=True) as router:
+            route = router.get(_URL).mock(return_value=httpx.Response(200, json={"data": []}))
+            await TOOLS["get_client_orders"].executor(client, {"login": "0974553663"})
+            await TOOLS["get_client_orders"].executor(
+                client, {"login": "0974553663", "counterparty": _CP_BETA},
+            )
+        first, second = (c.request.url.params for c in route.calls)
+        assert "counterparty" not in first
+        assert second["counterparty"] == _CP_BETA
+    finally:
+        await client.shutdown()
 
 
 async def test_masker_keeps_numbers_and_ids_and_hides_product_names():
