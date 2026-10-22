@@ -19,7 +19,7 @@ from mcbp_core.tools import TOOLS
 
 _URL = "http://test/ai/v1/client/auth/start"
 _DATA_KEYS = {"login", "known", "status", "chat_id", "name", "contact", "counterparty",
-              "contact_created", "allowed", "matches", "chat_id_conflict"}
+              "contact_created", "allowed", "matches", "chat_id_conflict", "session_epoch"}
 
 
 def _live_client() -> MCBPClient:
