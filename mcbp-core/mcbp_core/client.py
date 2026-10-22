@@ -673,8 +673,8 @@ class MCBPClient:
         Active (never over Disabled), otherwise a new record is Pending. A `chat_id` different
         from the one already stored is not saved: the record goes Pending and the reply carries
         `chat_id_conflict: true`. Returns {"data": {login, known, status, chat_id, name, contact,
-        counterparty, contact_created, allowed, matches, chat_id_conflict}}. POST is never
-        retried."""
+        counterparty, contact_created, allowed, matches, chat_id_conflict, session_epoch}};
+        `session_epoch` is 0 when the base has no epoch resource. POST is never retried."""
         if not isinstance(login, str) or not login.strip():
             raise ParameterError("login is required: the client's phone or e-mail")
         if not isinstance(confirmed, bool):
@@ -687,6 +687,16 @@ class MCBPClient:
         if last_name is not None:
             body["last_name"] = last_name
         return await self._request("POST", "/ai/v1/client/auth/start", json=body)
+
+    async def revoke_client_auth(self, login: str) -> dict:
+        """POST /ai/v1/client/auth/revoke — a service route for the backend, NOT a model tool.
+        Bumps the login's session epoch so every client session issued before it is invalid.
+        Returns {"data": {login, session_epoch}} with the new epoch; an unknown login is
+        NOT_FOUND. POST is never retried."""
+        if not isinstance(login, str) or not login.strip():
+            raise ParameterError("login is required: the client's phone or e-mail")
+        return await self._request("POST", "/ai/v1/client/auth/revoke",
+                                   json={"login": login.strip()})
 
     async def push_ai_context(self, body: dict) -> dict:
         return await self._request("POST", "/ai/v1/ai/context", json=body)
@@ -1748,22 +1758,32 @@ def _mock_client_orders(kw: dict) -> dict:
     return {"data": {**row, "counterparty": dict(row["counterparty"]), "items": items}}
 
 
-def _mock_client_auth_start(kw: dict) -> dict:
-    body = kw.get("json") or {}
-    login = str(body.get("login") or "").strip()
+# login -> session epoch; a login is known to the mock once a confirmed start saved it.
+_MOCK_CLIENT_EPOCH: dict[str, int] = {}
+
+
+def _mock_client_login(kw: dict) -> str:
+    login = str((kw.get("json") or {}).get("login") or "").strip()
     if not login:
         raise ParameterError("login is required: a phone number or an e-mail")
+    return login.lower() if "@" in login else "".join(ch for ch in login if ch in "0123456789")
+
+
+def _mock_client_auth_start(kw: dict) -> dict:
+    body = kw.get("json") or {}
+    login = _mock_client_login(kw)
     confirmed = body.get("confirmed")
     if not isinstance(confirmed, bool):
         raise ParameterError("confirmed is required: true or false")
-    login = login.lower() if "@" in login else "".join(ch for ch in login if ch in "0123456789")
     result: dict[str, Any] = {
         "login": login, "known": False, "status": None, "chat_id": None, "name": None,
         "contact": None, "counterparty": None, "contact_created": False, "allowed": False,
         "matches": None, "chat_id_conflict": False,
+        "session_epoch": _MOCK_CLIENT_EPOCH.get(login, 0),
     }
     if not confirmed:
         return {"data": result}
+    _MOCK_CLIENT_EPOCH.setdefault(login, 0)
     chat_id = body.get("chat_id")
     chat_text = None if chat_id is None else str(chat_id).strip() or None
     result.update(
@@ -1777,11 +1797,21 @@ def _mock_client_auth_start(kw: dict) -> dict:
     return {"data": result}
 
 
+def _mock_client_auth_revoke(kw: dict) -> dict:
+    login = _mock_client_login(kw)
+    if login not in _MOCK_CLIENT_EPOCH:
+        raise NotFoundError(f"Client login {login} not found")
+    _MOCK_CLIENT_EPOCH[login] += 1
+    return {"data": {"login": login, "session_epoch": _MOCK_CLIENT_EPOCH[login]}}
+
+
 def _mock_response(method: str, path: str, kw: dict) -> Any:
     if path.endswith("/health"):
         return {"status": "ok", "service": "MCBP_AI", "key": True, "mock": True}
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/start":
         return _mock_client_auth_start(kw)
+    if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/revoke":
+        return _mock_client_auth_revoke(kw)
     if path.rstrip("/") == "ai/v1/eventlog":
         return _mock_event_log(kw)
     if path.rstrip("/") == "ai/v1/client/orders":
