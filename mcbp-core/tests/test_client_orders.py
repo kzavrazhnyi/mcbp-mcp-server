@@ -237,7 +237,7 @@ def test_tool_is_read_only_mcp_only_and_appended_last():
     spec = TOOLS["get_client_orders"]
     assert spec.read_only is True
     assert spec.surfaces == frozenset({"mcp"})
-    assert list(TOOLS)[-1] == "get_client_orders"
+    assert list(TOOLS)[-2:] == ["get_client_orders", "get_client_bonus"]
     assert list(TOOLS)[0] == "search_catalog"
     assert spec.parameters["required"] == ["login"]
     assert set(spec.parameters["properties"]) == {"login", "order_id", "counterparty"}

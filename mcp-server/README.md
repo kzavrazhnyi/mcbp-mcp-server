@@ -40,7 +40,7 @@ server is the thin MCP adapter in front of it.
 
 ## Tools
 
-13 read tools are always registered. Eight write tools appear only when `MCP_ALLOW_WRITE` is on.
+14 read tools are always registered. Eight write tools appear only when `MCP_ALLOW_WRITE` is on.
 
 | Tool | What it does |
 |---|---|
@@ -55,6 +55,7 @@ server is the thin MCP adapter in front of it.
 | `get_register_records` | Raw rows of an information or accumulation register |
 | `get_event_log` | Event log slice (errors/warnings by default) under the user's own rights |
 | `get_client_orders` | Sales orders of a confirmed client (by phone or e-mail login), read-only, under the user's own rights |
+| `get_client_bonus` | Bonus points (balance, accrued) of a confirmed client, read-only; null = no bonus data in the base |
 | `health` | Service ping — reports whether the infobase key matches |
 | `write_object` *(gated)* | Create/update an object through MCBP Plus conversion rules |
 | `patch_object` *(gated)* | Update header attributes of an existing object natively |

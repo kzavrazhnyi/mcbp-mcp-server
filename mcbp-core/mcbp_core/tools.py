@@ -186,6 +186,10 @@ async def _get_client_orders(c: MCBPClient, a: dict) -> Any:
                                      counterparty=a.get("counterparty"))
 
 
+async def _get_client_bonus(c: MCBPClient, a: dict) -> Any:
+    return await c.get_client_bonus(a["login"], counterparty=a.get("counterparty"))
+
+
 async def _upsert_function_task(c: MCBPClient, a: dict) -> Any:
     return await c.upsert_function_task(
         a["function_id"], a.get("task_id"), description=a.get("description"),
@@ -983,6 +987,38 @@ TOOLS: dict[str, ToolSpec] = {
             "login or no allowed counterparty -> NOT_CONFIRMED; blank login or non-UUID "
             "`order_id` -> BAD_PARAMETER; an order of another client -> NOT_FOUND; a base "
             "without an order document -> NOT_CONFIGURED; no read right -> FORBIDDEN."
+        )),
+    "get_client_bonus": ToolSpec(
+        "get_client_bonus",
+        "Бонусні бали підтвердженого клієнта (лише читання, лише сума) з правами поточного "
+        "користувача. `login` — телефон або e-mail клієнта. Відповідь: `balance` (залишок), "
+        "`accrued` (нараховано), `unit` — завжди \"points\" (бали, не гроші). null у `balance`/"
+        "`accrued` — у цій базі немає даних про бонуси (немає регістра, права читання чи "
+        "виміру клієнта), це не помилка; клієнт без нарахувань — 0. Необов'язковий "
+        "`counterparty` (UUID) звужує до одного з дозволених контрагентів клієнта (їхні id — у "
+        "полі `counterparties` get_client_orders); чужий UUID — NOT_FOUND. Логін невідомий, не "
+        "підтверджений або без дозволеного контрагента — NOT_CONFIRMED; порожній логін чи "
+        "`counterparty` не UUID — BAD_PARAMETER; база без довідників клієнтів — NOT_CONFIGURED.",
+        _params(
+            {"login": {"type": "string", "description": "Телефон або e-mail клієнта"},
+             "counterparty": {"type": "string",
+                              "description": "Необов'язково: UUID дозволеного контрагента "
+                                             "клієнта; чужий — NOT_FOUND"}},
+            ["login"],
+        ),
+        _get_client_bonus,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Bonus points of a confirmed client (read-only, sum only) under the current user's "
+            "rights. `login` is the client's phone or e-mail. Returns `balance`, `accrued` and "
+            "`unit`, which is always \"points\" (bonus points, not money). null in `balance`/"
+            "`accrued` means no bonus data in this base (no register, no read right or no client "
+            "dimension) and is not an error; a client with no records -> 0. Optional "
+            "`counterparty` (UUID) narrows to one of the client's allowed counterparties (ids "
+            "from the `counterparties` envelope of get_client_orders); a foreign UUID -> "
+            "NOT_FOUND. Unknown, unconfirmed login or no allowed counterparty -> NOT_CONFIRMED; "
+            "blank login or non-UUID `counterparty` -> BAD_PARAMETER; a base without the client "
+            "login catalogs -> NOT_CONFIGURED."
         )),
 }
 

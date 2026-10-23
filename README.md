@@ -74,7 +74,7 @@ The full tool list, every environment variable, security notes and troubleshooti
 
 ## Tools
 
-13 read tools are always registered; eight write tools appear only when `MCP_ALLOW_WRITE=1`.
+14 read tools are always registered; eight write tools appear only when `MCP_ALLOW_WRITE=1`.
 
 ```
 list_metadata → describe_metadata → search_catalog / filter_catalog / get_documents → get_object
