@@ -189,7 +189,8 @@ def test_specs_are_mcp_only_appended_after_event_log_and_upsert_is_write_gated()
     assert names[names.index("get_event_log") + 1:] == ["list_function_tasks",
                                                        "upsert_function_task",
                                                        "set_register_record",
-                                                       "get_client_orders"]
+                                                       "get_client_orders",
+                                                       "get_client_bonus"]
     listing, upsert = TOOLS["list_function_tasks"], TOOLS["upsert_function_task"]
     assert listing.read_only is True and upsert.read_only is False
     assert listing.surfaces == upsert.surfaces == frozenset({"mcp"})
