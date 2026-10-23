@@ -663,6 +663,25 @@ class MCBPClient:
                 ) from None
         return await self._request("GET", "/ai/v1/client/orders", params=params)
 
+    async def get_client_bonus(self, login: str, counterparty: str | None = None) -> dict:
+        """Bonus points of a confirmed client `login` (phone or e-mail), under the caller's
+        rights: {"data": {"balance", "accrued", "unit": "points"}}. `balance`/`accrued` are null
+        when the base has no bonus data (no register, no read right, no client dimension).
+        `counterparty` (UUID) narrows to one of the client's allowed counterparties. Errors as
+        `get_client_orders`: NOT_CONFIRMED (NotConfirmedError), a foreign counterparty ->
+        NotFoundError."""
+        if not isinstance(login, str) or not login.strip():
+            raise ParameterError("login is required: the client's phone or e-mail")
+        params: dict[str, Any] = {"login": login.strip()}
+        if counterparty is not None:
+            try:
+                params["counterparty"] = str(uuid.UUID(str(counterparty).strip()))
+            except ValueError:
+                raise ParameterError(
+                    f"counterparty must be a counterparty UUID, got {counterparty!r}"
+                ) from None
+        return await self._request("GET", "/ai/v1/client/bonus", params=params)
+
     async def start_client_auth(self, login: str, *, confirmed: bool,
                                 chat_id: int | str | None = None,
                                 name: str | None = None,
@@ -1758,6 +1777,21 @@ def _mock_client_orders(kw: dict) -> dict:
     return {"data": {**row, "counterparty": dict(row["counterparty"]), "items": items}}
 
 
+def _mock_client_bonus(kw: dict) -> dict:
+    params = kw.get("params") or {}
+    if not str(params.get("login") or "").strip():
+        raise ParameterError("Parameter 'login' is required")
+    raw_cp = params.get("counterparty")
+    if raw_cp is not None:
+        try:
+            cp_id = str(uuid.UUID(str(raw_cp)))
+        except ValueError:
+            raise ParameterError("Parameter 'counterparty' must be a counterparty UUID") from None
+        if not any(c["id"] == cp_id for c in _MOCK_CLIENT_COUNTERPARTIES):
+            raise NotFoundError(f"Counterparty {cp_id} is not among this client's")
+    return {"data": {"balance": None, "accrued": None, "unit": "points"}}
+
+
 # login -> session epoch; a login is known to the mock once a confirmed start saved it.
 _MOCK_CLIENT_EPOCH: dict[str, int] = {}
 
@@ -1816,6 +1850,8 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return _mock_event_log(kw)
     if path.rstrip("/") == "ai/v1/client/orders":
         return _mock_client_orders(kw)
+    if path.rstrip("/") == "ai/v1/client/bonus":
+        return _mock_client_bonus(kw)
     if method == "POST" and path.rstrip("/") == "ai/v1/functions":
         return _mock_function_upsert(kw)
     if method == "POST" and path.startswith("ai/v1/functions/") and path.endswith("/status"):
