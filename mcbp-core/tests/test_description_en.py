@@ -8,7 +8,7 @@ import hashlib
 from mcbp_core.tools import TOOLS, tool_specs
 
 # Snapshot of the Ukrainian `description` values as of the commit that introduced
-# `description_en` (search_catalog/filter_catalog hashes updated in 0.1.9 for the count rule) — guards against an accidental reword invalidating the Anthropic prompt cache.
+# `description_en` (search_catalog/filter_catalog hashes updated in 0.1.9 for the count rule; patch_object for tabular sections and create mode) — guards against an accidental reword invalidating the Anthropic prompt cache.
 _UA_DESCRIPTION_SHA256 = {
     "search_catalog": "e2e26634ff896912cf967cacf41ec79bd773ef38a01cae48050962b125dd6fae",
     "get_documents": "c5d67095d419fca314c4a938144a01b2663d3a5d9880dfe3ed39f01aa8a43950",
@@ -21,7 +21,7 @@ _UA_DESCRIPTION_SHA256 = {
     "health": "2b472b33a1af9c2bbfbe89bbb2434dd9a85ad05c91208a7e24d856e8edc9f365",
     "write_object": "a321af95fec111f84201bd925f03b71c4b4f719d6a91a5f9d2274da091095a0f",
     "save_context": "3a87ceeb0b5daa3077c67d66ee5f3be38bb4241df2ec06c7c70bc00712d970ff",
-    "patch_object": "b7a55be8ce5c1e11044144f0a2de4b7e2b693f8670bb2289a21655725d65e236",
+    "patch_object": "c80611fd3c2a8b8c3c2c1b2fe4ea28224f74e9a9fa090e4958407d6a44a23553",
     "get_register_records": "f387cbc16f077b5656fb06ca919cb4a4a5de3e4cbdefcbaf0aaa736d2c8b0795",
 }
 
