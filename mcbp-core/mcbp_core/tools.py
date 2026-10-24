@@ -590,50 +590,54 @@ TOOLS: dict[str, ToolSpec] = {
         )),
     "patch_object": ToolSpec(
         "patch_object",
-        "Змінює ЛИШЕ названі реквізити шапки ІСНУЮЧОГО об'єкта (напр. статус замовлення) — БЕЗ "
-        "MCBP Plus і БЕЗ правила конвертації (на відміну від write_object, який завжди йде через "
-        "Plus і без налаштованого правила для типу дає 501 PLUS_REQUIRED/422 "
-        "CONVERSION_NOT_CONFIGURED). Усе, що НЕ назване в `fields`, лишається без змін — головна "
-        "відмінність від write_object. Спершу знайди об'єкт (search_catalog/get_documents) і "
-        "візьми його `id` з Ref.Data. Значення посилального поля — UUID цільового об'єкта; для "
-        "СКЛАДЕНОГО посилального поля (кілька можливих типів, напр. СостояниеЗаказа — довідники "
-        "СостоянияЗаказовПокупателей/СостоянияЗаказНарядов) голий UUID — ПОМИЛКА: завжди передавай "
-        "\"ІмяТипу:UUID\" (типи з describe_metadata). `Ref`/`Ссылка` і `Проведен`/`Posted` "
-        "змінити не можна — стан проведення документа зберігається автоматично (був проведений — "
-        "лишиться проведеним; не був — записується непроведеним), зміна статусу НЕ впливає на "
-        "облік. Табличні частини не підтримуються в цій версії (BAD_PARAMETER, якщо назвати "
-        "поле-табчастину). Відповідь показує старе й нове значення КОЖНОГО зміненого поля і "
-        "поточний стан проведення — підтверди результат користувачу саме за цими даними, не "
-        "вигадуй.",
+        "Нативно записує реквізити шапки і табличні частини об'єкта — БЕЗ MCBP Plus і БЕЗ правила "
+        "конвертації (write_object іде через Plus і без правила дає 501 PLUS_REQUIRED/422 "
+        "CONVERSION_NOT_CONFIGURED). Змінюються лише названі в `fields` ключі. `id` — UUID "
+        "об'єкта (Ref.Data з search_catalog/get_documents), або \"new\" — СТВОРИТИ новий: лише "
+        "власні довідники й документи MCBP_* (інші типи створюй через write_object). Значення "
+        "шапки: посилання — UUID; СКЛАДЕНЕ посилання (кілька типів, напр. СостояниеЗаказа) — "
+        "завжди \"ІмяТипу:UUID\" (типи з describe_metadata); перечислення — ім'я значення; дата — "
+        "YYYY-MM-DD[ HH:MM[:SS]]; null/\"\" очищає. Табчастина: масив рядків {колонка: значення} "
+        "ЗАМІНЮЄ її ([] очищає), {\"mode\":\"append\",\"rows\":[...]} ДОДАЄ рядки (не "
+        "ідемпотентно — після незрозумілого результату не повторюй, перевір get_object). "
+        "`IsFolder: true` при створенні — група довідника. Документ: `Posted: true` проводить, "
+        "`false` скасовує проведення; без ключа проведений лишається проведеним. `Ref`/"
+        "`DeletionMark` змінити не можна. Збій запису/проведення — 422 WRITE_FAILED, нічого не "
+        "змінено. Відповідь: старе й нове значення КОЖНОГО зміненого поля (для табчастин — "
+        "кількість рядків), `created` і підсумковий `posted` — підтверди результат користувачу "
+        "саме за цими даними, не вигадуй.",
         _params(
             {"metadata": {"type": "string", "description": "Вид: Catalogs, Documents, Tasks, ..."},
              "type": {"type": "string", "description": "Тип об'єкта, напр. ЗаказПокупателя"},
-             "id": {"type": "string", "description": "UUID об'єкта (Ref.Data зі списку/get_object)"},
+             "id": {"type": "string",
+                    "description": "UUID об'єкта (Ref.Data зі списку/get_object) або \"new\" "
+                                   "для створення (лише MCBP_*)"},
              "fields": {"type": "object",
-                        "description": "{ім'я_поля: нове_значення}, напр. {\"СостояниеЗаказа\": "
-                                       "\"СостоянияЗаказовПокупателей:<uuid>\"}. Лише названі поля "
-                                       "змінюються."}},
+                        "description": "{поле: значення, табчастина: [{колонка: значення}]}, напр. "
+                                       "{\"СостояниеЗаказа\": \"СостоянияЗаказовПокупателей:<uuid>\"}. "
+                                       "Лише названі ключі змінюються."}},
             ["metadata", "type", "id", "fields"],
         ),
         _patch_object,
         read_only=False,
         description_en=(
-            "Changes ONLY the named header attributes of an EXISTING object (e.g. an order's "
-            "status) — WITHOUT MCBP Plus and WITHOUT a conversion rule (unlike write_object, "
-            "which always goes through Plus and gives 501 PLUS_REQUIRED/422 "
-            "CONVERSION_NOT_CONFIGURED without a configured rule for the type). Everything NOT "
-            "named in `fields` stays unchanged — the main difference from write_object. First "
-            "find the object (search_catalog/get_documents) and take its `id` from Ref.Data. A "
-            "reference field's value is the UUID of the target object; for a COMPOSITE "
-            "reference field (several possible types, e.g. СостояниеЗаказа — catalogs "
-            "СостоянияЗаказовПокупателей/СостоянияЗаказНарядов) a bare UUID is an ERROR — always "
-            "pass \"TypeName:UUID\" (types from describe_metadata). `Ref`/`Ссылка` and "
-            "`Проведен`/`Posted` cannot be changed — a document's posting state is preserved "
-            "automatically (posted stays posted, unposted is written unposted; changing the "
-            "status does NOT affect the ledger). Tabular sections are not supported in this "
-            "version (BAD_PARAMETER if you name a tabular-section field). The response shows "
-            "the old and new value of EACH changed field and the current posting state — "
-            "confirm the result to the user based on that data, don't make it up."
+            "Natively writes an object's header attributes and tabular sections — WITHOUT MCBP "
+            "Plus and WITHOUT a conversion rule (write_object goes through Plus and without a "
+            "rule gives 501 PLUS_REQUIRED/422 CONVERSION_NOT_CONFIGURED). Only the keys named in "
+            "`fields` change. `id` is the object's UUID (Ref.Data from search_catalog/"
+            "get_documents), or \"new\" to CREATE one: own MCBP_* catalogs and documents only "
+            "(create any other type with write_object). Header values: a reference is a UUID; a "
+            "COMPOSITE reference (several types, e.g. СостояниеЗаказа) is always "
+            "\"TypeName:UUID\" (types from describe_metadata); an enum is its value name; a date "
+            "is YYYY-MM-DD[ HH:MM[:SS]]; null/\"\" clears. A tabular section: an array of "
+            "{column: value} rows REPLACES it ([] clears it), {\"mode\":\"append\",\"rows\":[...]} "
+            "ADDS rows (not idempotent — after an unclear result don't repeat, check with "
+            "get_object). `IsFolder: true` on create makes a catalog folder. Documents: "
+            "`Posted: true` posts, `false` unposts; without the key a posted document stays "
+            "posted. `Ref`/`DeletionMark` cannot be set. A failed write/post is 422 WRITE_FAILED "
+            "and changes nothing. The response shows old and new of EACH changed field (row "
+            "counts for sections), `created` and the final `posted` — confirm the result to the "
+            "user from that data, don't make it up."
         )),
     "get_register_records": ToolSpec(
         "get_register_records",
