@@ -126,7 +126,7 @@ async def test_mock_unknown_id_is_not_found():
 async def test_executor_maps_arguments():
     spec = TOOLS["upsert_idea"]
     assert set(spec.parameters["properties"]) == {
-        "idea_id", "description", "specification", "deletion_mark"}
+        "idea_id", "description", "specification", "deletion_mark", "project"}
     client = _mock_client()
     created = await spec.executor(client, {"description": "Idea", "specification": "Why"})
     iid = created["data"]["id"]

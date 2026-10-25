@@ -57,6 +57,12 @@ def _params(properties: dict, required: list[str]) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required}
 
 
+_PROJECT_REF = {"type": "string",
+                "description": "Проєкт як \"ІмяТипу:UUID\" (ІмяТипу — довідник проєктів бази, "
+                               "напр. MCBP_Projects; поле `project` з upsert_project); "
+                               "\"\" очищає"}
+
+
 # --- Executors (kwargs only — the client's parameter order is NOT a contract) ---
 async def _search_catalog(c: MCBPClient, a: dict) -> Any:
     return await c.list_catalog(
@@ -167,6 +173,8 @@ async def _upsert_function(c: MCBPClient, a: dict) -> Any:
         a.get("function_id"), description=a.get("description"),
         functions_type=a.get("functions_type"), deletion_mark=a.get("deletion_mark"),
         specification=a.get("specification"), ideas=a.get("ideas"),
+        project=a.get("project"), parent_id=a.get("parent_id"), is_folder=a.get("is_folder"),
+        documentation=a.get("documentation"),
     )
 
 
@@ -174,6 +182,29 @@ async def _upsert_idea(c: MCBPClient, a: dict) -> Any:
     return await c.upsert_idea(
         a.get("idea_id"), description=a.get("description"),
         specification=a.get("specification"), deletion_mark=a.get("deletion_mark"),
+        project=a.get("project"),
+    )
+
+
+async def _upsert_project(c: MCBPClient, a: dict) -> Any:
+    return await c.upsert_project(
+        a.get("project_id"), type_=a.get("type"), description=a.get("description"),
+        parent_id=a.get("parent_id"), is_folder=a.get("is_folder"),
+        deletion_mark=a.get("deletion_mark"),
+    )
+
+
+async def _upsert_bug(c: MCBPClient, a: dict) -> Any:
+    return await c.upsert_bug(
+        a.get("bug_id"), description=a.get("description"), project=a.get("project"),
+        function_id=a.get("function_id"), details=a.get("details"), source=a.get("source"),
+        fixed_version=a.get("fixed_version"), deletion_mark=a.get("deletion_mark"),
+    )
+
+
+async def _set_bug_status(c: MCBPClient, a: dict) -> Any:
+    return await c.set_bug_status(
+        a["bug_id"], status=a["status"], fixed_version=a.get("fixed_version"),
     )
 
 
@@ -751,7 +782,10 @@ TOOLS: dict[str, ToolSpec] = {
         "текст. `ideas` — ПОВНИЙ упорядкований список UUID елементів MCBP_Ideas для рядків "
         "Ideas: рядки замінюються цілком, [] очищає, дублікати відкидаються, невідомий UUID — "
         "NOT_FOUND з його назвою; спершу застосовуються `ideas`, потім `specification` змінює "
-        "ідею НОВОГО першого рядка. Та сама зміна удруге нічого не змінює "
+        "ідею НОВОГО першого рядка. `project` — \"ІмяТипу:UUID\" елемента довідника проєктів, "
+        "\"\" очищає; `parent_id` — UUID групи (\"\" — верхній рівень); `is_folder: true` лише "
+        "при створенні — група; `documentation` — документація, \"\" очищає. "
+        "Та сама зміна удруге нічого не змінює "
         "(`changed: false`). Невідомий `function_id` — NOT_FOUND; база без довідника — "
         "NOT_CONFIGURED; немає права додавання/зміни — FORBIDDEN.",
         _params(
@@ -765,7 +799,14 @@ TOOLS: dict[str, ToolSpec] = {
              "specification": {"type": "string",
                                "description": "ТЗ: що функція має робити (поведінка, дані, результат), не повтор назви; \"\" очищає"},
              "ideas": {"type": "array", "items": {"type": "string"},
-                       "description": "Повний упорядкований список UUID елементів MCBP_Ideas (рядки Ideas замінюються); [] очищає"}},
+                       "description": "Повний упорядкований список UUID елементів MCBP_Ideas (рядки Ideas замінюються); [] очищає"},
+             "project": _PROJECT_REF,
+             "parent_id": {"type": "string",
+                           "description": "UUID групи MCBP_Functions; \"\" — верхній рівень"},
+             "is_folder": {"type": "boolean",
+                           "description": "Лише при створенні: true створює групу"},
+             "documentation": {"type": "string",
+                               "description": "Документація функції; \"\" очищає"}},
             [],
         ),
         _upsert_function,
@@ -785,7 +826,13 @@ TOOLS: dict[str, ToolSpec] = {
             "`ideas` is the FULL ordered list of MCBP_Ideas item UUIDs for the Ideas rows: the "
             "rows are replaced, [] clears them, duplicates are dropped, an unknown UUID -> "
             "NOT_FOUND naming it; `ideas` is applied first, then `specification` edits the idea "
-            "of the NEW first row. "
+            "of the NEW first row. `project` is \"TypeName:UUID\" of a project catalog item "
+            "(TypeName = a project catalog of the base, e.g. MCBP_Projects; the `project` field "
+            "of upsert_project), \"\" clears it, an unknown project -> NOT_FOUND. `parent_id` is "
+            "a folder UUID of MCBP_Functions, \"\" moves the item to the top level; an item, the "
+            "item itself or its descendant -> BAD_PARAMETER. `is_folder: true` (create only) "
+            "creates a folder. `documentation` is the function's documentation text, \"\" clears "
+            "it. A field not applicable to a folder/item -> BAD_PARAMETER. "
             "Repeating the same change changes nothing (`changed: false`). Unknown "
             "`function_id` -> NOT_FOUND; a base without the catalog (or, when `specification` "
             "is given, without the ideas catalog) -> NOT_CONFIGURED; no insert/update right "
@@ -798,7 +845,8 @@ TOOLS: dict[str, ToolSpec] = {
         "виклик створює ще одну); з `idea_id` (UUID) — зміна лише переданих полів. "
         "`specification` — текст ідеї (що і навіщо), \"\" очищає. `deletion_mark: true` ставить "
         "позначку вилучення. Дата зміни ставиться автоматично. Щоб прив'язати ідею до функції — "
-        "upsert_function з `ideas`. Та сама зміна удруге нічого не змінює (`changed: false`). "
+        "upsert_function з `ideas`. `project` — \"ІмяТипу:UUID\" елемента довідника проєктів, "
+        "\"\" очищає. Та сама зміна удруге нічого не змінює (`changed: false`). "
         "Невідомий `idea_id` — NOT_FOUND; база без довідника — NOT_CONFIGURED; немає права "
         "додавання/зміни — FORBIDDEN.",
         _params(
@@ -808,7 +856,8 @@ TOOLS: dict[str, ToolSpec] = {
                              "description": "Найменування ідеї, не довше за DescriptionLength довідника; обов'язкове при створенні"},
              "specification": {"type": "string",
                                "description": "Текст ідеї: що і навіщо; \"\" очищає"},
-             "deletion_mark": {"type": "boolean"}},
+             "deletion_mark": {"type": "boolean"},
+             "project": _PROJECT_REF},
             [],
         ),
         _upsert_idea,
@@ -821,9 +870,126 @@ TOOLS: dict[str, ToolSpec] = {
             "change. `specification` is the idea text (what and why), \"\" clears it. "
             "`deletion_mark: true` sets the deletion mark. The modification date is set "
             "automatically. To link an idea to a function use upsert_function with `ideas`. "
+            "`project` is \"TypeName:UUID\" of a project catalog item (TypeName = a project "
+            "catalog of the base, e.g. MCBP_Projects), \"\" clears it, an unknown project -> "
+            "NOT_FOUND. "
             "Repeating the same change changes nothing (`changed: false`). Unknown `idea_id` -> "
             "NOT_FOUND; a base without the catalog -> NOT_CONFIGURED; no insert/update right -> "
             "FORBIDDEN."
+        )),
+    "upsert_project": ToolSpec(
+        "upsert_project",
+        "Створює або змінює елемент довідника проєктів (тип реквізиту Project у MCBP_Functions, "
+        "MCBP_Bugs, MCBP_Ideas — з метаданих бази, напр. MCBP_Projects) напряму. "
+        "Без `project_id` — новий елемент (`type` і `description` обов'язкові; кожен виклик "
+        "створює ще один); з `project_id` (UUID) — зміна лише переданих полів, `type` потрібен "
+        "лише коли UUID є в кількох довідниках. `parent_id` — UUID групи того самого довідника, "
+        "\"\" — верхній рівень; `is_folder: true` лише при створенні — група. Поле `project` "
+        "відповіді (\"ІмяТипу:UUID\") передається як `project` в upsert_function, upsert_idea, "
+        "upsert_bug. Та сама зміна удруге нічого не змінює (`changed: false`). Невідомий "
+        "`project_id` — NOT_FOUND; невідомий `type` — BAD_PARAMETER з переліком; база без "
+        "довідників проєктів — NOT_CONFIGURED; немає права додавання/зміни — FORBIDDEN.",
+        _params(
+            {"type": {"type": "string",
+                      "description": "Довідник проєктів (напр. MCBP_Projects або Catalog.X); "
+                                     "обов'язковий при створенні"},
+             "project_id": {"type": "string",
+                            "description": "UUID елемента; без нього — створення"},
+             "description": {"type": "string",
+                             "description": "Найменування; обов'язкове при створенні"},
+             "parent_id": {"type": "string",
+                           "description": "UUID групи того самого довідника; \"\" — верхній рівень"},
+             "is_folder": {"type": "boolean",
+                           "description": "Лише при створенні: true створює групу"},
+             "deletion_mark": {"type": "boolean"}},
+            [],
+        ),
+        _upsert_project,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates one item of a project catalog (a catalog type of the `Project` "
+            "attribute of MCBP_Functions, MCBP_Bugs and MCBP_Ideas, read from the base metadata, "
+            "e.g. MCBP_Projects) natively. No `project_id` -> a new item (`type` "
+            "and `description` required; every such call creates another one); with "
+            "`project_id` (UUID) -> only the passed fields change, and `type` is needed only when "
+            "the UUID exists in several project catalogs. `parent_id` is a folder UUID of the "
+            "same catalog, \"\" moves the item to the top level; `is_folder: true` (create only) "
+            "creates a folder. The `project` field of the response (\"TypeName:UUID\") is the "
+            "value to pass as `project` to upsert_function, upsert_idea and upsert_bug. "
+            "Repeating the same change changes nothing (`changed: false`). Unknown `project_id` "
+            "-> NOT_FOUND; unknown `type` -> BAD_PARAMETER listing the types; a base without "
+            "project catalogs -> NOT_CONFIGURED; no insert/update right -> FORBIDDEN."
+        )),
+    "upsert_bug": ToolSpec(
+        "upsert_bug",
+        "Створює або змінює елемент довідника MCBP_Bugs (помилка) напряму. Без `bug_id` — нова "
+        "помилка (`description` обов'язковий; кожен виклик створює ще одну; статус — перше "
+        "значення перелічення, автор — поточний користувач); з `bug_id` (UUID) — зміна лише "
+        "переданих полів. `project` — \"ІмяТипу:UUID\" елемента довідника проєктів; "
+        "`function_id` — UUID елемента MCBP_Functions; `details` — опис відтворення, `source` — "
+        "звідки помилка, `fixed_version` — версія виправлення; \"\" очищає кожне з них. Статус "
+        "змінює лише set_bug_status. Та сама зміна удруге нічого не змінює (`changed: false`). "
+        "Невідомий `bug_id`, проєкт або функція — NOT_FOUND; база без довідника або реквізиту — "
+        "NOT_CONFIGURED; немає права додавання/зміни — FORBIDDEN.",
+        _params(
+            {"bug_id": {"type": "string",
+                        "description": "UUID елемента MCBP_Bugs; без нього — створення"},
+             "description": {"type": "string",
+                             "description": "Найменування помилки; обов'язкове при створенні"},
+             "project": _PROJECT_REF,
+             "function_id": {"type": "string",
+                             "description": "UUID елемента MCBP_Functions; \"\" очищає"},
+             "details": {"type": "string", "description": "Деталі / кроки; \"\" очищає"},
+             "source": {"type": "string", "description": "Джерело; \"\" очищає"},
+             "fixed_version": {"type": "string",
+                               "description": "Версія виправлення; \"\" очищає"},
+             "deletion_mark": {"type": "boolean"}},
+            [],
+        ),
+        _upsert_bug,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates one MCBP_Bugs catalog item (a bug) natively. No `bug_id` -> a "
+            "new bug (`description` required; every such call creates another one; the status "
+            "starts at the first enum value and the author is the current user); with `bug_id` "
+            "(UUID) -> only the passed fields change. `project` is \"TypeName:UUID\" of a "
+            "project catalog item (TypeName = a project catalog of the base, e.g. "
+            "MCBP_Projects); `function_id` is an MCBP_Functions item UUID; `details` holds the "
+            "reproduction details, `source` where the bug came from, `fixed_version` the version "
+            "that fixes it; \"\" clears each of them. The status changes only through "
+            "set_bug_status. Repeating the same change changes nothing (`changed: false`). "
+            "Unknown `bug_id`, project or function -> NOT_FOUND; a base without the catalog or "
+            "the attribute -> NOT_CONFIGURED; no insert/update right -> FORBIDDEN."
+        )),
+    "set_bug_status": ToolSpec(
+        "set_bug_status",
+        "Встановлює статус елемента довідника MCBP_Bugs. `bug_id` — UUID помилки; `status` — "
+        "ім'я значення перелічення реквізиту Status (New, Confirmed, Fixed, Verified, Rejected; "
+        "без урахування регістру; інше — BAD_PARAMETER з переліком); `fixed_version` — версія "
+        "виправлення, \"\" очищає, не передане лишається як було. Той самий виклик удруге "
+        "нічого не змінює (`changed: false`). Невідома помилка — NOT_FOUND; база без "
+        "перелічення — NOT_CONFIGURED; немає права зміни — FORBIDDEN.",
+        _params(
+            {"bug_id": {"type": "string", "description": "UUID елемента MCBP_Bugs"},
+             "status": {"type": "string",
+                        "enum": ["New", "Confirmed", "Fixed", "Verified", "Rejected"]},
+             "fixed_version": {"type": "string",
+                               "description": "Версія виправлення; \"\" очищає"}},
+            ["bug_id", "status"],
+        ),
+        _set_bug_status,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Sets the status of one MCBP_Bugs catalog item. `bug_id` is the bug UUID; `status` "
+            "is a value name of the Status attribute's enumeration (New, Confirmed, Fixed, "
+            "Verified, Rejected; case-insensitive; anything else -> BAD_PARAMETER listing the "
+            "names); `fixed_version` is the version that fixes it, \"\" clears it, an omitted "
+            "one keeps its stored value. Repeating the same call changes nothing "
+            "(`changed: false`). Unknown bug -> NOT_FOUND; a base without the enumeration -> "
+            "NOT_CONFIGURED; no update right -> FORBIDDEN."
         )),
     "get_event_log": ToolSpec(
         "get_event_log",
