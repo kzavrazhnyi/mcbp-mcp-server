@@ -82,7 +82,8 @@ _ERROR_CODE_MAP: dict[str, type[MCBPError]] = {
 log = logging.getLogger("mcbp.api")
 
 # Retry only idempotent methods: a POST (create_object/push_ai_context) writes through MCBP
-# Plus, and retrying after a partial success could create a duplicate object.
+# Plus, and retrying after a partial success could create a duplicate object. A PATCH that
+# creates (`id="new"`) or appends rows is not idempotent either: `patch_object` passes retry=False.
 _RETRYABLE_METHODS = frozenset({"GET", "PATCH"})
 _MAX_RETRIES = 2
 
@@ -364,8 +365,9 @@ class MCBPClient:
         if self._client:
             await self._client.aclose()
 
-    async def _request(self, method: str, path: str, **kw) -> Any:
+    async def _request(self, method: str, path: str, *, retry: bool = True, **kw) -> Any:
         path = path.lstrip("/")  # httpx base_url requires relative paths
+        retryable = retry and method in _RETRYABLE_METHODS
         is_tips = path.startswith("ai/v1/tips")
         is_dash = path.startswith("ai/v1/dashboard/layout")
         is_chat = path.startswith("ai/v1/chats") or is_tips or is_dash
@@ -404,7 +406,7 @@ class MCBPClient:
             try:
                 resp = await self._client.request(method, path, **kw)
             except httpx.ConnectError as e:
-                if method in _RETRYABLE_METHODS and attempt < _MAX_RETRIES:
+                if retryable and attempt < _MAX_RETRIES:
                     log.warning(
                         "%s %s %s ✗ connect error, retrying (%d/%d): %s",
                         method, log_path, brief, attempt + 1, _MAX_RETRIES, e,
@@ -412,16 +414,18 @@ class MCBPClient:
                     await asyncio.sleep(0.3 * (attempt + 1))
                     attempt += 1
                     continue
-                log.warning("%s %s %s ✗ transport error: %s", method, log_path, brief, e)
+                log.warning("%s %s %s ✗ transport error %s: %s",
+                            method, log_path, brief, type(e).__name__, e)
                 raise UpstreamError(f"transport error: {e}") from e
             except httpx.HTTPError as e:
-                log.warning("%s %s %s ✗ transport error: %s", method, log_path, brief, e)
+                log.warning("%s %s %s ✗ transport error %s: %s",
+                            method, log_path, brief, type(e).__name__, e)
                 raise UpstreamError(f"transport error: {e}") from e
 
             elapsed_ms = (time.monotonic() - start) * 1000
             log.info("%s %s %s → %s (%.0f ms)", method, log_path, brief, resp.status_code, elapsed_ms)
 
-            if resp.status_code == 503 and method in _RETRYABLE_METHODS and attempt < _MAX_RETRIES:
+            if resp.status_code == 503 and retryable and attempt < _MAX_RETRIES:
                 log.warning(
                     "%s %s %s ✗ 503, retrying (%d/%d)",
                     method, log_path, brief, attempt + 1, _MAX_RETRIES,
@@ -956,18 +960,27 @@ class MCBPClient:
         return await self._request("GET", f"/ai/v1/object/{kind}/{type_}/{object_id}")
 
     async def patch_object(self, kind: str, type_: str, object_id: str, fields: dict) -> dict:
-        """Natively changes ONLY the named header attributes of an EXISTING object — no MCBP
-        Plus, no conversion rule needed (unlike `create_object`). Every other field on the
-        object is left untouched; tabular sections are out of scope (BAD_PARAMETER if named).
-        Posted state is preserved automatically by BAS — a posted document is re-written with
-        posting, an unposted one stays unposted; `fields` cannot itself toggle it.
+        """Natively writes the named header attributes and tabular sections of one object — no
+        MCBP Plus, no conversion rule (unlike `create_object`). Keys not in `fields` are left
+        untouched. `object_id` is a Ref UUID, or "new" to create an own MCBP_* catalog item or
+        document (201; any other type → FORBIDDEN, use `create_object`).
 
-        `fields` is a flat {field: value} dict — reference-field values are the target's Ref
-        UUID, or "MetadataName:UUID" for a composite reference type (e.g. `СостояниеЗаказа`,
-        which resolves to one of several catalogs). Response: {"metadata","type","id","changed"
-        [{"field","old","new"}, ...], "posted"}."""
+        `fields` is one flat dict. A header value: Ref UUID, "MetadataName:UUID" for a composite
+        type, an enum value name, `YYYY-MM-DD[ HH:MM[:SS]]`, None clears. A tabular section:
+        a list of {column: value} rows replaces it, or {"mode": "replace"|"append", "rows": [...]}.
+        `IsFolder: True` (create only) makes a catalog folder; `Posted: True|False` posts/unposts
+        a document — without it a posted document is re-posted, an unposted one stays unposted.
+        A failed write/post is 422 WRITE_FAILED with nothing changed.
+
+        A create or an append is not retried on 503/connect errors: a retry could duplicate.
+        Response: {"metadata","type","id","created","changed" [{"field","old","new"}, ...]
+        (row counts for sections), "posted"}."""
+        retry = object_id.strip().lower() != "new" and not any(
+            isinstance(v, dict) and str(v.get("mode", "")).strip().lower() == "append"
+            for v in fields.values()
+        )
         return await self._request(
-            "PATCH", f"/ai/v1/object/{kind}/{type_}/{object_id}", json=fields,
+            "PATCH", f"/ai/v1/object/{kind}/{type_}/{object_id}", json=fields, retry=retry,
         )
 
     async def set_register_record(self, type_: str, fields: dict) -> dict:

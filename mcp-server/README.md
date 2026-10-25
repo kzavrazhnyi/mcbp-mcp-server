@@ -58,7 +58,7 @@ server is the thin MCP adapter in front of it.
 | `get_client_bonus` | Bonus points (balance, accrued) of a confirmed client, read-only; null = no bonus data in the base |
 | `health` | Service ping — reports whether the infobase key matches |
 | `write_object` *(gated)* | Create/update an object through MCBP Plus conversion rules |
-| `patch_object` *(gated)* | Update header attributes of an existing object natively |
+| `patch_object` *(gated)* | Update header attributes and tabular sections (replace/append) natively; `id="new"` creates an own `MCBP_*` catalog item or document; `Posted` posts/unposts a document |
 | `set_register_record` *(gated)* | Upsert one information-register record natively (key = all dimensions + `Period`; no delete) |
 | `save_context` *(gated)* | Push a conversation turn upstream (skeleton) |
 | `set_function_status` *(gated)* | Set the support-tracker status of one MCBP function |
