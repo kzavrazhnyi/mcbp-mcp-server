@@ -550,7 +550,10 @@ TOOLS: dict[str, ToolSpec] = {
         "{поле: значення}, BAS сам будує конверт обміну. `key` — ключ обміну: той самий `key` "
         "наступного разу веде на ТОЙ САМИЙ об'єкт (без нього — завжди новий). `id` вказує на "
         "об'єкт, що вже існує в базі. `base` — Identifier іншої бази обміну "
-        "(`InformationBase` — застарілий синонім `base`, не використовуй).",
+        "(`InformationBase` — застарілий синонім `base`, не використовуй). Посилальний "
+        "реквізит (і посилання в рядку табличної частини) — вкладена структура "
+        "{\"KEY\": \"<uuid>\", \"CatalogObject_<ІмяТипу>\": {\"Ref\": \"<uuid>\"}} (документ — "
+        "`DocumentObject_<ІмяТипу>`), не голий UUID: голий UUID лишає реквізит порожнім.",
         _params(
             {"type": {"type": "string", "description": "Тип об'єкта, напр. Контрагенты"},
              "payload": {"type": "object", "description": "{ім'я_поля: значення}"},
@@ -568,7 +571,11 @@ TOOLS: dict[str, ToolSpec] = {
             "exchange key: the SAME `key` next time leads to the SAME object (without it — "
             "always a new one). `id` points to an object that already exists in the base. "
             "`base` is the Identifier of another exchange base (`InformationBase` is a "
-            "deprecated synonym of `base` — don't use it)."
+            "deprecated synonym of `base` — don't use it). A reference attribute (also a "
+            "reference inside a tabular-section row) is the nested structure "
+            "{\"KEY\": \"<uuid>\", \"CatalogObject_<TypeName>\": {\"Ref\": \"<uuid>\"}} (a "
+            "document: `DocumentObject_<TypeName>`), not a bare UUID string — a bare UUID leaves "
+            "the attribute empty."
         )),
     "save_context": ToolSpec(
         "save_context",
@@ -960,7 +967,9 @@ TOOLS: dict[str, ToolSpec] = {
         "Замовлення покупця підтвердженого клієнта (лише читання) з правами поточного "
         "користувача. `login` — телефон або e-mail клієнта. Без `order_id` — до 50 найновіших "
         "замовлень без рядків: номер, дата, сума, валюта, стан, проведено, сплачено (`paid`), "
-        "до сплати (`to_pay`); null — у документа немає такого реквізиту. З `order_id` (UUID "
+        "до сплати (`to_pay`); null — у документа немає такого реквізиту. `closed`: true — "
+        "замовлення завершене/закрите в BAS, false — ні, null — база не дає це визначити. "
+        "З `order_id` (UUID "
         "замовлення зі списку) — одне замовлення з товарами `items`. Необов'язковий "
         "`counterparty` (UUID) звужує до одного з дозволених контрагентів клієнта; їхні id — у "
         "полі `counterparties` списку без фільтра; чужий UUID — NOT_FOUND. Логін невідомий, не "
@@ -983,7 +992,9 @@ TOOLS: dict[str, ToolSpec] = {
             "Sales orders of a confirmed client (read-only) under the current user's rights. "
             "`login` is the client's phone or e-mail. Without `order_id` -> up to 50 newest "
             "orders without lines: number, date, amount, currency, state, posted, `paid`, "
-            "`to_pay`; null means the document has no such attribute. With `order_id` (an "
+            "`to_pay`; null means the document has no such attribute. `closed`: true = the "
+            "order is finished/closed in BAS, false = not, null = the base has no way to tell. "
+            "With `order_id` (an "
             "order UUID from the list) -> one order with its `items`. Optional `counterparty` "
             "(UUID) narrows to one of the client's allowed counterparties; their ids come from "
             "the `counterparties` envelope of the unfiltered list; a foreign UUID -> NOT_FOUND. "

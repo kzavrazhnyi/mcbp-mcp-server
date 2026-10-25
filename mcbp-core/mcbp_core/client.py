@@ -414,10 +414,12 @@ class MCBPClient:
                     await asyncio.sleep(0.3 * (attempt + 1))
                     attempt += 1
                     continue
-                log.warning("%s %s %s ✗ transport error: %s", method, log_path, brief, e)
+                log.warning("%s %s %s ✗ transport error %s: %s",
+                            method, log_path, brief, type(e).__name__, e)
                 raise UpstreamError(f"transport error: {e}") from e
             except httpx.HTTPError as e:
-                log.warning("%s %s %s ✗ transport error: %s", method, log_path, brief, e)
+                log.warning("%s %s %s ✗ transport error %s: %s",
+                            method, log_path, brief, type(e).__name__, e)
                 raise UpstreamError(f"transport error: {e}") from e
 
             elapsed_ms = (time.monotonic() - start) * 1000

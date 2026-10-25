@@ -368,6 +368,22 @@ async def test_non_envelope_html_body_flagged_in_warning(caplog):
 
 
 @respx.mock
+async def test_transport_error_log_names_exception_class(caplog):
+    respx.get("http://test/ai/v1/catalogs/X").mock(side_effect=httpx.ReadTimeout("timed out"))
+    client = _live_client()
+    await client.startup()
+    try:
+        with caplog.at_level("WARNING", logger="mcbp.api"):
+            with pytest.raises(UpstreamError):
+                await client.list_catalog("X", None, 50, None)
+        lines = [r.getMessage() for r in caplog.records if "transport error" in r.getMessage()]
+        assert lines and "ReadTimeout" in lines[-1]
+        assert "u:p@" not in lines[-1] and "Authorization" not in lines[-1]
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
 async def test_patch_body_value_logged_not_only_keys(caplog):
     respx.patch(
         "http://test/ai/v1/object/Documents/ЗаказПокупателя/e3f1d9b6-0001-11ef-a850-cc52afc9fc6f"
