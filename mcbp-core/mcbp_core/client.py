@@ -383,6 +383,8 @@ class MCBPClient:
                 return _mock_chats(self._cfg.user, method, path, kw)
             if method == "POST" and path.rstrip("/") == "ai/v1/ideas":
                 return _mock_idea_upsert(kw, self._cfg.user)
+            if method == "POST" and path.rstrip("/") == "ai/v1/bugs":
+                return _mock_bug_upsert(kw, self._cfg.user)
             if path.startswith("ai/v1/functions/") and path.rstrip("/").endswith("/tasks"):
                 return _mock_function_tasks(method, path, kw, self._cfg.user)
             return _mock_response(method, path, kw)
@@ -1018,7 +1020,11 @@ class MCBPClient:
                               functions_type: str | None = None,
                               deletion_mark: bool | None = None,
                               specification: str | None = None,
-                              ideas: list[str] | None = None) -> dict:
+                              ideas: list[str] | None = None,
+                              project: str | None = None,
+                              parent_id: str | None = None,
+                              is_folder: bool | None = None,
+                              documentation: str | None = None) -> dict:
         """Creates (no `function_id`) or updates one MCBP_Functions catalog item natively — no
         MCBP Plus conversion. `description` is required on create; `functions_type` is a value
         NAME of the item's enum attribute, `""` clears it; None leaves a field as stored.
@@ -1027,10 +1033,13 @@ class MCBPClient:
         `specification` is the text of the idea in the item's first Ideas row (the idea is created
         when there is none); `""` clears the text and keeps the link. With both, `ideas` is
         applied first and `specification` then edits the idea of the new first row.
-        `deletion_mark=True` is how a probe item is cleaned up. A repeated update with the same
-        fields changes nothing; every create adds a new item. POST is not retried.
+        `deletion_mark=True` is how a probe item is cleaned up. `project` is "TypeName:UUID" of a
+        project catalog item, `parent_id` a folder UUID of this catalog, `documentation` a text;
+        `""` clears each (`parent_id` `""` = top level). `is_folder=True` (create only) makes a
+        folder. A repeated update with the same fields changes nothing; every create adds a new
+        item. POST is not retried.
         {"data": {"id","description","functions_type","deletion_mark","specification","ideas",
-        "created","changed"}}."""
+        "project","parent_id","is_folder","documentation","created","changed"}}."""
         if function_id is not None and not function_id.strip():
             raise ParameterError("function_id is blank - omit it to create a function, "
                                  "or pass the item UUID to update one")
@@ -1045,19 +1054,30 @@ class MCBPClient:
             body["specification"] = specification or None
         if ideas is not None:
             body["ideas"] = list(ideas)
+        if project is not None:
+            body["project"] = project or None
+        if parent_id is not None:
+            body["parent_id"] = parent_id or None
+        if is_folder is not None:
+            body["is_folder"] = is_folder
+        if documentation is not None:
+            body["documentation"] = documentation or None
         params = {"id": function_id} if function_id is not None else None
         return await self._request("POST", "/ai/v1/functions", params=params, json=body)
 
     async def upsert_idea(self, idea_id: str | None = None, *,
                           description: str | None = None,
                           specification: str | None = None,
-                          deletion_mark: bool | None = None) -> dict:
+                          deletion_mark: bool | None = None,
+                          project: str | None = None) -> dict:
         """Creates (no `idea_id`) or updates one MCBP_Ideas catalog item natively — no MCBP Plus
         conversion. `description` is required on create; `specification` `""` clears the text;
-        None leaves a field as stored. ModifiedDate is set by BAS on every write. Linking an idea
-        to functions is `upsert_function(ideas=[...])`. A repeated update with the same fields
-        changes nothing; every create adds a new item. POST is not retried.
-        {"data": {"id","description","specification","deletion_mark","created","changed"}}."""
+        `project` is "TypeName:UUID" of a project catalog item, `""` clears it; None leaves a
+        field as stored. ModifiedDate is set by BAS on every write. Linking an idea to functions
+        is `upsert_function(ideas=[...])`. A repeated update with the same fields changes
+        nothing; every create adds a new item. POST is not retried.
+        {"data": {"id","description","specification","deletion_mark","project","created",
+        "changed"}}."""
         if idea_id is not None and not idea_id.strip():
             raise ParameterError("idea_id is blank - omit it to create an idea, "
                                  "or pass the item UUID to update one")
@@ -1068,8 +1088,90 @@ class MCBPClient:
             body["specification"] = specification or None
         if deletion_mark is not None:
             body["deletion_mark"] = deletion_mark
+        if project is not None:
+            body["project"] = project or None
         params = {"id": idea_id} if idea_id is not None else None
         return await self._request("POST", "/ai/v1/ideas", params=params, json=body)
+
+    async def upsert_project(self, project_id: str | None = None, *,
+                             type_: str | None = None,
+                             description: str | None = None,
+                             parent_id: str | None = None,
+                             is_folder: bool | None = None,
+                             deletion_mark: bool | None = None) -> dict:
+        """Creates (no `project_id`) or updates one item of a project catalog (a catalog type of
+        the `Project` attribute of MCBP_Functions/MCBP_Bugs/MCBP_Ideas) natively. `type_` (the
+        catalog name) and `description` are required on create; on update `type_` is optional
+        unless the UUID exists in several project catalogs. `parent_id` is a folder UUID of the
+        same catalog, `""` = top level; `is_folder=True` (create only) makes a folder. None
+        leaves a field as stored. A repeated update changes nothing; every create adds a new
+        item. POST is not retried. {"data": {"id","type","project" ("Type:UUID"),"description",
+        "parent_id","is_folder","deletion_mark","created","changed"}}."""
+        if project_id is not None and not project_id.strip():
+            raise ParameterError("project_id is blank - omit it to create a project, "
+                                 "or pass the item UUID to update one")
+        if type_ is not None and not type_.strip():
+            raise ParameterError("type is blank - pass the project catalog name")
+        body: dict[str, Any] = {}
+        if description is not None:
+            body["description"] = description
+        if parent_id is not None:
+            body["parent_id"] = parent_id or None
+        if is_folder is not None:
+            body["is_folder"] = is_folder
+        if deletion_mark is not None:
+            body["deletion_mark"] = deletion_mark
+        params: dict[str, str] = {}
+        if type_ is not None:
+            params["type"] = type_
+        if project_id is not None:
+            params["id"] = project_id
+        return await self._request("POST", "/ai/v1/projects", params=params or None, json=body)
+
+    async def upsert_bug(self, bug_id: str | None = None, *,
+                         description: str | None = None,
+                         project: str | None = None,
+                         function_id: str | None = None,
+                         details: str | None = None,
+                         source: str | None = None,
+                         fixed_version: str | None = None,
+                         deletion_mark: bool | None = None) -> dict:
+        """Creates (no `bug_id`) or updates one MCBP_Bugs catalog item natively. `description` is
+        required on create; `project` is "TypeName:UUID" of a project catalog item, `function_id`
+        an MCBP_Functions UUID; `""` clears `project`, `function_id`, `details`, `source` and
+        `fixed_version`; None leaves a field as stored. On create BAS sets Status to the first
+        enum value and Author to the current user; the status changes only via
+        `set_bug_status`. POST is not retried. {"data": {"id","code","description","project",
+        "function_id","status","fixed_version","details","source","modified_date",
+        "deletion_mark","created","changed"}}."""
+        if bug_id is not None and not bug_id.strip():
+            raise ParameterError("bug_id is blank - omit it to create a bug, "
+                                 "or pass the item UUID to update one")
+        body: dict[str, Any] = {}
+        if description is not None:
+            body["description"] = description
+        for key, value in (("project", project), ("function_id", function_id),
+                           ("details", details), ("source", source),
+                           ("fixed_version", fixed_version)):
+            if value is not None:
+                body[key] = value or None
+        if deletion_mark is not None:
+            body["deletion_mark"] = deletion_mark
+        params = {"id": bug_id} if bug_id is not None else None
+        return await self._request("POST", "/ai/v1/bugs", params=params, json=body)
+
+    async def set_bug_status(self, bug_id: str, *, status: str,
+                             fixed_version: str | None = None) -> dict:
+        """Sets the Status of one MCBP_Bugs item (UUID `bug_id`): `status` is a value NAME of the
+        attribute's enum (New, Confirmed, Fixed, Verified, Rejected; case-insensitive);
+        `fixed_version` `""` clears it, None leaves it as stored. Same body twice changes nothing.
+        POST is not retried. Response = the `upsert_bug` shape with `created: false`."""
+        body: dict[str, Any] = {"status": status}
+        if fixed_version is not None:
+            body["fixed_version"] = fixed_version or None
+        return await self._request(
+            "POST", f"/ai/v1/bugs/{quote(bug_id, safe='')}/status", json=body,
+        )
 
     async def list_function_tasks(self, function_id: str, *, limit: int | None = None) -> dict:
         """Tracker tasks of one MCBP_Functions item (UUID `function_id`), newest first, under the
@@ -1392,16 +1494,91 @@ _MOCK_IDEAS: dict[str, dict] = {}
 _FUNCTION_TYPES = ("Basic", "Common", "AutomaticActions", "DataExchange",
                    "ArtificialIntelligence", "SupportService", "AdvancedAnalytics")
 _FUNCTION_DESCRIPTION_MAX = 150
-_FUNCTION_FIELDS = ("description", "functions_type", "deletion_mark", "specification", "ideas")
-_IDEA_FIELDS = ("description", "specification", "deletion_mark")
+_FUNCTION_FIELDS = ("description", "functions_type", "deletion_mark", "specification", "ideas",
+                    "project", "parent_id", "is_folder", "documentation")
+_IDEA_FIELDS = ("description", "specification", "deletion_mark", "project")
 _IDEA_DESCRIPTION_MAX = 150
+_MOCK_PROJECTS: dict[str, dict] = {}
+_MOCK_BUGS: dict[str, dict] = {}
+# Catalog types of the `Project` attribute; the real routes read them from metadata.
+_PROJECT_TYPES = ("MCBP_Projects", "MCBP_ProjectsUT", "MCBP_ProjectsWF")
+_PROJECT_FIELDS = ("description", "parent_id", "is_folder", "deletion_mark")
+_BUG_FIELDS = ("description", "project", "function_id", "details", "source", "fixed_version",
+               "deletion_mark")
+_BUG_STATUS_FIELDS = ("status", "fixed_version")
+# Value names of the MCBP_Bugs `Status` enum in their metadata order (the first is the default).
+_BUG_STATUSES = ("New", "Confirmed", "Fixed", "Verified", "Rejected")
+_bug_seq = itertools.count(1)
 
 
 def reset_mock_functions() -> None:
-    """Clears the mock functions, the mock ideas they link to and their mock tasks."""
+    """Clears the mock functions, the mock ideas they link to, their mock tasks and the mock
+    projects and bugs."""
     _MOCK_FUNCTIONS.clear()
     _MOCK_IDEAS.clear()
     _MOCK_FUNCTION_TASKS.clear()
+    _MOCK_PROJECTS.clear()
+    _MOCK_BUGS.clear()
+
+
+def _mock_check_fields(body: Any, accepted: tuple[str, ...]) -> dict:
+    if not isinstance(body, dict):
+        raise ParameterError("Body must be a JSON object: " + ", ".join(accepted))
+    for key in body:
+        if key not in accepted:
+            raise ParameterError(f"Unknown field '{key}' - accepted: " + ", ".join(accepted))
+    return body
+
+
+def _mock_project_ref(raw: Any) -> str | None:
+    """Validates a composite `Project` value ("TypeName:UUID"); None/"" clears it."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    type_name, _, raw_uuid = raw.strip().partition(":") if isinstance(raw, str) else ("", "", "")
+    if type_name not in _PROJECT_TYPES:
+        raise ParameterError("project must be 'TypeName:UUID' with TypeName one of: "
+                             + ", ".join(_PROJECT_TYPES))
+    try:
+        project_id = str(uuid.UUID(raw_uuid))
+    except ValueError:
+        raise ParameterError("project must be 'TypeName:UUID'") from None
+    stored = _MOCK_PROJECTS.get(project_id)
+    if stored is None or stored["type"] != type_name:
+        raise NotFoundError(f"Catalog {type_name} {project_id} not found or not accessible")
+    return f"{type_name}:{project_id}"
+
+
+def _mock_parent(raw: Any, own_id: str | None, rows: dict[str, dict], what: str) -> str | None:
+    """Validates `parent_id`: a folder of the same catalog, not the item or its descendant."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        parent_id = str(uuid.UUID(raw.strip())) if isinstance(raw, str) else None
+    except ValueError:
+        parent_id = None
+    if parent_id is None:
+        raise ParameterError(f"parent_id must be a {what} folder UUID or null")
+    parent = rows.get(parent_id)
+    if parent is None:
+        raise NotFoundError(f"Catalog {what} {parent_id} not found")
+    if not parent.get("is_folder"):
+        raise ParameterError(f"parent_id {parent_id} is an item, not a folder")
+    node: str | None = parent_id
+    while node is not None:
+        if node == own_id:
+            raise ParameterError("parent_id is the item itself or one of its descendants")
+        node = rows[node].get("parent_id")
+    return parent_id
+
+
+def _mock_is_folder(body: dict, old: dict | None) -> bool | None:
+    if "is_folder" not in body:
+        return None
+    if not isinstance(body["is_folder"], bool):
+        raise ParameterError("is_folder must be true or false")
+    if old is not None and body["is_folder"] != old.get("is_folder", False):
+        raise ParameterError("is_folder can only be set on create")
+    return body["is_folder"]
 
 
 def _mock_function_upsert(kw: dict) -> dict:
@@ -1456,11 +1633,19 @@ def _mock_function_upsert(kw: dict) -> dict:
         spec_text = raw_spec if raw_spec and raw_spec.strip() else ""
     if "ideas" in body:
         new["ideas"] = _mock_idea_list(body["ideas"])
+    if "project" in body:
+        new["project"] = _mock_project_ref(body["project"])
+    if "documentation" in body:
+        raw_doc = body["documentation"]
+        if raw_doc is not None and not isinstance(raw_doc, str):
+            raise ParameterError("documentation must be a string or null")
+        new["documentation"] = raw_doc if raw_doc and raw_doc.strip() else None
 
     if is_create:
         function_id = str(uuid.uuid4())
         old = None
-        row = {"description": "", "functions_type": None, "deletion_mark": False, "ideas": []}
+        row = {"description": "", "functions_type": None, "deletion_mark": False, "ideas": [],
+               "project": None, "parent_id": None, "is_folder": False, "documentation": None}
     else:
         try:
             function_id = str(uuid.UUID(raw_id))
@@ -1470,6 +1655,12 @@ def _mock_function_upsert(kw: dict) -> dict:
         if old is None:
             raise NotFoundError(f"Catalog MCBP_Functions {function_id} not found")
         row = dict(old)
+    is_folder = _mock_is_folder(body, old)
+    if is_folder is not None:
+        new["is_folder"] = is_folder
+    if "parent_id" in body:
+        new["parent_id"] = _mock_parent(body["parent_id"], None if is_create else function_id,
+                                        _MOCK_FUNCTIONS, "MCBP_Functions")
     row.update(new)
     changed = is_create or row != old
     # Same order as BSL: rows first, then the specification edits the first row's idea.
@@ -1545,11 +1736,14 @@ def _mock_idea_upsert(kw: dict, user: str) -> dict:
         if not isinstance(body["deletion_mark"], bool):
             raise ParameterError("deletion_mark must be true or false")
         new["deletion_mark"] = body["deletion_mark"]
+    if "project" in body:
+        new["project"] = _mock_project_ref(body["project"])
 
     if is_create:
         idea_id = str(uuid.uuid4())
         old = None
-        row = {"description": "", "specification": "", "deletion_mark": False, "author": user}
+        row = {"description": "", "specification": "", "deletion_mark": False, "author": user,
+               "project": None}
     else:
         try:
             idea_id = str(uuid.UUID(raw_id))
@@ -1564,8 +1758,176 @@ def _mock_idea_upsert(kw: dict, user: str) -> dict:
     _MOCK_IDEAS[idea_id] = row
     return {"data": {"id": idea_id, "description": row["description"],
                      "specification": row["specification"] or None,
+                     "deletion_mark": row["deletion_mark"], "project": row.get("project"),
+                     "created": is_create, "changed": changed}}
+
+
+def _mock_description(body: dict, is_create: bool, what: str, max_len: int = 150) -> str | None:
+    if "description" not in body:
+        if is_create:
+            raise ParameterError(f"description is required when creating {what} (no id given)")
+        return None
+    description = body["description"]
+    if not isinstance(description, str) or not description.strip():
+        raise ParameterError("description must be a non-empty string")
+    description = description.strip()
+    if len(description) > max_len:
+        raise ParameterError(f"description is longer than {max_len} characters")
+    return description
+
+
+def _mock_deletion_mark(body: dict, new: dict) -> None:
+    if "deletion_mark" in body:
+        if not isinstance(body["deletion_mark"], bool):
+            raise ParameterError("deletion_mark must be true or false")
+        new["deletion_mark"] = body["deletion_mark"]
+
+
+def _mock_project_upsert(kw: dict) -> dict:
+    body = _mock_check_fields(kw.get("json"), _PROJECT_FIELDS)
+    params = kw.get("params") or {}
+    raw_id, raw_type = params.get("id"), params.get("type")
+    if raw_id is not None and not str(raw_id).strip():
+        raise ParameterError("id is blank - omit it to create a project, or pass the item UUID "
+                             "to update one")
+    is_create = raw_id is None
+    type_name = None
+    if raw_type is not None:
+        type_name = str(raw_type).strip().removeprefix("Catalog.")
+        if type_name not in _PROJECT_TYPES:
+            raise ParameterError(f"Unknown project type '{raw_type}' - one of: "
+                                 + ", ".join(_PROJECT_TYPES))
+    elif is_create:
+        raise ParameterError("type is required when creating a project - one of: "
+                             + ", ".join(_PROJECT_TYPES))
+    new: dict[str, Any] = {}
+    description = _mock_description(body, is_create, "a project")
+    if description is not None:
+        new["description"] = description
+    _mock_deletion_mark(body, new)
+
+    if is_create:
+        project_id = str(uuid.uuid4())
+        old = None
+        row = {"type": type_name, "description": "", "parent_id": None, "is_folder": False,
+               "deletion_mark": False}
+    else:
+        try:
+            project_id = str(uuid.UUID(raw_id))
+        except ValueError:
+            raise ParameterError("id must be a project catalog item UUID") from None
+        old = _MOCK_PROJECTS.get(project_id)
+        if old is None or (type_name is not None and old["type"] != type_name):
+            raise NotFoundError(f"Project {project_id} not found")
+        row = dict(old)
+    is_folder = _mock_is_folder(body, old)
+    if is_folder is not None:
+        new["is_folder"] = is_folder
+    if "parent_id" in body:
+        same_type = {k: v for k, v in _MOCK_PROJECTS.items() if v["type"] == row["type"]}
+        new["parent_id"] = _mock_parent(body["parent_id"], None if is_create else project_id,
+                                        same_type, row["type"])
+    row.update(new)
+    changed = is_create or row != old
+    _MOCK_PROJECTS[project_id] = row
+    return {"data": {"id": project_id, "type": row["type"],
+                     "project": f"{row['type']}:{project_id}", "description": row["description"],
+                     "parent_id": row["parent_id"], "is_folder": row["is_folder"],
                      "deletion_mark": row["deletion_mark"], "created": is_create,
                      "changed": changed}}
+
+
+def _mock_bug_view(bug_id: str, row: dict, created: bool, changed: bool) -> dict:
+    return {"data": {"id": bug_id, **{k: v for k, v in row.items() if k != "author"},
+                     "created": created, "changed": changed}}
+
+
+def _mock_bug_upsert(kw: dict, user: str) -> dict:
+    body = _mock_check_fields(kw.get("json"), _BUG_FIELDS)
+    raw_id = (kw.get("params") or {}).get("id")
+    if raw_id is not None and not str(raw_id).strip():
+        raise ParameterError("id is blank - omit it to create a bug, or pass the item UUID "
+                             "to update one")
+    is_create = raw_id is None
+    new: dict[str, Any] = {}
+    description = _mock_description(body, is_create, "a bug")
+    if description is not None:
+        new["description"] = description
+    _mock_deletion_mark(body, new)
+    if "project" in body:
+        new["project"] = _mock_project_ref(body["project"])
+    if "function_id" in body:
+        raw_fn = body["function_id"]
+        if raw_fn is None or (isinstance(raw_fn, str) and not raw_fn.strip()):
+            new["function_id"] = None
+        else:
+            try:
+                fn_id = str(uuid.UUID(raw_fn.strip())) if isinstance(raw_fn, str) else None
+            except ValueError:
+                fn_id = None
+            if fn_id is None:
+                raise ParameterError("function_id must be a MCBP_Functions item UUID or null")
+            if fn_id not in _MOCK_FUNCTIONS:
+                raise NotFoundError(f"Catalog MCBP_Functions {fn_id} not found")
+            new["function_id"] = fn_id
+    for key in ("details", "source", "fixed_version"):
+        if key in body:
+            raw = body[key]
+            if raw is not None and not isinstance(raw, str):
+                raise ParameterError(f"{key} must be a string or null")
+            new[key] = raw if raw and raw.strip() else None
+
+    if is_create:
+        bug_id = str(uuid.uuid4())
+        old = None
+        row = {"code": f"{next(_bug_seq):09d}", "description": "", "project": None,
+               "function_id": None, "status": _BUG_STATUSES[0], "fixed_version": None,
+               "details": None, "source": None, "modified_date": None, "deletion_mark": False,
+               "author": user}
+    else:
+        try:
+            bug_id = str(uuid.UUID(raw_id))
+        except ValueError:
+            raise ParameterError("id must be a MCBP_Bugs item UUID") from None
+        old = _MOCK_BUGS.get(bug_id)
+        if old is None:
+            raise NotFoundError(f"Catalog MCBP_Bugs {bug_id} not found")
+        row = dict(old)
+    row.update(new)
+    changed = is_create or row != old
+    if changed:
+        row["modified_date"] = _mock_now()
+    _MOCK_BUGS[bug_id] = row
+    return _mock_bug_view(bug_id, row, is_create, changed)
+
+
+def _mock_bug_status(path: str, kw: dict) -> dict:
+    body = _mock_check_fields(kw.get("json"), _BUG_STATUS_FIELDS)
+    raw_status = body.get("status")
+    status = next((s for s in _BUG_STATUSES
+                   if isinstance(raw_status, str) and s.lower() == raw_status.strip().lower()),
+                  None)
+    if status is None:
+        raise ParameterError(f"Unknown status '{raw_status}' - one of: "
+                             + ", ".join(_BUG_STATUSES))
+    try:
+        bug_id = str(uuid.UUID(unquote(path.rstrip("/").split("/")[-2])))
+    except ValueError:
+        raise ParameterError("id must be a MCBP_Bugs item UUID") from None
+    old = _MOCK_BUGS.get(bug_id)
+    if old is None:
+        raise NotFoundError(f"Catalog MCBP_Bugs {bug_id} not found")
+    row = {**old, "status": status}
+    if "fixed_version" in body:
+        raw = body["fixed_version"]
+        if raw is not None and not isinstance(raw, str):
+            raise ParameterError("fixed_version must be a string or null")
+        row["fixed_version"] = raw if raw and raw.strip() else None
+    changed = row != old
+    if changed:
+        row["modified_date"] = _mock_now()
+    _MOCK_BUGS[bug_id] = row
+    return _mock_bug_view(bug_id, row, False, changed)
 
 
 _MOCK_FUNCTION_TASKS: dict[str, dict] = {}
@@ -1869,6 +2231,10 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return _mock_function_upsert(kw)
     if method == "POST" and path.startswith("ai/v1/functions/") and path.endswith("/status"):
         return _mock_function_status(path, kw)
+    if method == "POST" and path.rstrip("/") == "ai/v1/projects":
+        return _mock_project_upsert(kw)
+    if method == "POST" and path.startswith("ai/v1/bugs/") and path.endswith("/status"):
+        return _mock_bug_status(path, kw)
     if "/metadata/" in path:
         return _mock_metadata(path)
     if method == "PATCH" and "ai/v1/object/" in path:

@@ -64,6 +64,9 @@ server is the thin MCP adapter in front of it.
 | `set_function_status` *(gated)* | Set the support-tracker status of one MCBP function |
 | `upsert_function` *(gated)* | Create or update one MCBP_Functions item natively (no Plus conversion) |
 | `upsert_idea` *(gated)* | Create or update one MCBP_Ideas item natively; link ideas to a function via `upsert_function` `ideas` |
+| `upsert_project` *(gated)* | Create or update one project catalog item (a catalog type of `Project`, e.g. MCBP_Projects) natively |
+| `upsert_bug` *(gated)* | Create or update one MCBP_Bugs item natively (status starts at the first enum value) |
+| `set_bug_status` *(gated)* | Set the status (New / Confirmed / Fixed / Verified / Rejected) of one MCBP_Bugs item |
 | `list_function_tasks` | Tracker tasks whose subject is one MCBP_Functions item, newest first |
 | `upsert_function_task` *(gated)* | Create or update one tracker task of an MCBP_Functions item natively |
 
