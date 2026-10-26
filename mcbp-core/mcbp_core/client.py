@@ -478,6 +478,8 @@ class MCBPClient:
             "status": payload.get("status", "ok"),
             "service": payload.get("service", "MCBP_AI"),
             "key": bool(payload.get("key", True)),
+            # A base without the field grants no admin rights: the /ui hides admin-only items.
+            "is_admin": payload.get("is_admin") is True,
         }
 
     async def list_catalog(self, type_: str, cursor: str | None, limit: int, q: str | None,
@@ -2216,7 +2218,7 @@ def _mock_client_auth_revoke(kw: dict) -> dict:
 
 def _mock_response(method: str, path: str, kw: dict) -> Any:
     if path.endswith("/health"):
-        return {"status": "ok", "service": "MCBP_AI", "key": True, "mock": True}
+        return {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": True, "mock": True}
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/start":
         return _mock_client_auth_start(kw)
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/revoke":

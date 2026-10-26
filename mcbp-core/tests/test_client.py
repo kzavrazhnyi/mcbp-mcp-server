@@ -650,7 +650,26 @@ async def test_health_returns_real_key_true():
     await client.startup()
     try:
         result = await client.health()
-        assert result == {"status": "ok", "service": "MCBP_AI", "key": True}
+        assert result == {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": False}
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(True, True), (False, False), ("true", False), (1, False)],
+)
+@respx.mock
+async def test_health_is_admin_only_on_json_true(raw: object, expected: bool):
+    respx.get("http://test/ai/v1/health").mock(
+        return_value=httpx.Response(
+            200, json={"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": raw}
+        )
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        assert (await client.health())["is_admin"] is expected
     finally:
         await client.shutdown()
 
@@ -681,6 +700,7 @@ async def test_health_response_without_key_does_not_crash():
         assert result["status"] == "ok"
         assert result["service"] == "MCBP_AI"
         assert result["key"] is True  # sensible default for an older base with no key field
+        assert result["is_admin"] is False
     finally:
         await client.shutdown()
 
@@ -692,6 +712,7 @@ async def test_health_mock_mode_still_usable():
     assert result["status"] == "ok"
     assert result["service"] == "MCBP_AI"
     assert result["key"] is True
+    assert result["is_admin"] is True
 
 
 async def test_connection_config_verify_defaults_true():
