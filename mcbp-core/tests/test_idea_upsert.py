@@ -62,7 +62,7 @@ async def test_update_passes_id_and_empty_specification_as_null():
     (403, "LICENSE_REQUIRED", LicenseRequiredError),
     (404, "NOT_FOUND", NotFoundError),
     (409, "LOCKED", ConflictError),
-    (422, "NOT_CONFIGURED", NotConfiguredError),
+    (400, "NOT_CONFIGURED", NotConfiguredError),
 ])
 @respx.mock
 async def test_errors_are_typed_and_post_is_not_retried(status, code, exc):
