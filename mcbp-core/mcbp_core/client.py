@@ -126,6 +126,35 @@ def _classify_legacy_error(text: str) -> Exception:
     return UpstreamError(text)
 
 
+class _Unset:
+    """Marks an argument the caller did not pass — distinct from None, which clears a field."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+UNSET: Any = _Unset()
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _birth_date_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return date(value.year, value.month, value.day).isoformat()
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if _ISO_DATE.fullmatch(text):
+            try:
+                return date.fromisoformat(text).isoformat()
+            except ValueError:
+                pass
+    raise ParameterError(f"birth_date must be a date or 'YYYY-MM-DD', got {value!r}")
+
+
 _LOG_BODY_LIMIT = 500
 _LOG_RESPONSE_LIMIT = 800
 
@@ -371,8 +400,10 @@ class MCBPClient:
         is_tips = path.startswith("ai/v1/tips")
         is_dash = path.startswith("ai/v1/dashboard/layout")
         is_chat = path.startswith("ai/v1/chats") or is_tips or is_dash
-        # client/auth bodies carry the client's phone/e-mail and Telegram chat id: log shapes only.
-        brief = _kw_brief(kw, chat=is_chat or path.startswith("ai/v1/client/auth"))
+        # client/auth and client/profile bodies carry the client's phone/e-mail, chat id and
+        # personal data: log shapes only.
+        brief = _kw_brief(kw, chat=is_chat or path.startswith(("ai/v1/client/auth",
+                                                               "ai/v1/client/profile")))
         if self._mock:
             log.info("[mock] %s %s %s", method, path, brief)
             if is_dash:
@@ -724,6 +755,52 @@ class MCBPClient:
             raise ParameterError("login is required: the client's phone or e-mail")
         return await self._request("POST", "/ai/v1/client/auth/revoke",
                                    json={"login": login.strip()})
+
+    async def get_client_profile(self, login: str) -> dict:
+        """GET /ai/v1/client/profile — a service route for the backend, NOT a model tool.
+        Returns {"data": {login, contact, name, last_name, middle_name, birth_date, logins}};
+        `logins` = [{login, status, is_current}] of every row of the same contact. A login that
+        is unknown or not Active -> NotConfirmedError (403 NOT_CONFIRMED)."""
+        if not isinstance(login, str) or not login.strip():
+            raise ParameterError("login is required: the client's phone or e-mail")
+        return await self._request("GET", "/ai/v1/client/profile",
+                                   params={"login": login.strip()})
+
+    async def update_client_profile(self, login: str, *, name: Any = UNSET,
+                                    last_name: Any = UNSET, middle_name: Any = UNSET,
+                                    birth_date: Any = UNSET) -> dict:
+        """POST /ai/v1/client/profile — a service route for the backend, NOT a model tool.
+        Only the passed fields are sent; None clears one. `birth_date` is a `date` or a
+        'YYYY-MM-DD' string (checked here, before HTTP). Written to every row of the login's
+        contact; returns the `get_client_profile` data plus `changed`. POST is never retried."""
+        if not isinstance(login, str) or not login.strip():
+            raise ParameterError("login is required: the client's phone or e-mail")
+        body: dict[str, Any] = {}
+        for key, value in (("name", name), ("last_name", last_name),
+                           ("middle_name", middle_name)):
+            if value is UNSET:
+                continue
+            if value is not None and not isinstance(value, str):
+                raise ParameterError(f"{key} must be a string or None, got {value!r}")
+            body[key] = value
+        if birth_date is not UNSET:
+            body["birth_date"] = _birth_date_value(birth_date)
+        return await self._request("POST", "/ai/v1/client/profile",
+                                   params={"login": login.strip()}, json=body)
+
+    async def bind_client_login(self, login: str, new_login: str) -> dict:
+        """POST /ai/v1/client/profile/logins — a service route for the backend, NOT a model tool;
+        call it only after the backend verified a code sent to `new_login`. Binds `new_login` to
+        the contact of `login`; returns the `get_client_profile` data plus `changed` (false when
+        `new_login` is already this contact's). `new_login` of another contact -> ConflictError
+        (409 CONFLICT). POST is never retried."""
+        if not isinstance(login, str) or not login.strip():
+            raise ParameterError("login is required: the client's phone or e-mail")
+        if not isinstance(new_login, str) or not new_login.strip():
+            raise ParameterError("new_login is required: the phone or e-mail to bind")
+        return await self._request("POST", "/ai/v1/client/profile/logins",
+                                   params={"login": login.strip()},
+                                   json={"new_login": new_login.strip()})
 
     async def push_ai_context(self, body: dict) -> dict:
         return await self._request("POST", "/ai/v1/ai/context", json=body)
@@ -2216,6 +2293,93 @@ def _mock_client_auth_revoke(kw: dict) -> dict:
     return {"data": {"login": login, "session_epoch": _MOCK_CLIENT_EPOCH[login]}}
 
 
+# Every login a confirmed start saved belongs to _MOCK_CLIENT_CONTACT (as the start mock answers);
+# _MOCK_CLIENT_OTHER_LOGINS are Active logins of other contacts. Profile fields live per contact.
+_MOCK_CLIENT_CONTACT = {"id": "4a6c8e20-0000-4000-8000-000000000001", "type": "КонтактныеЛица",
+                        "name": "Контактна особа (mock)"}
+_MOCK_CLIENT_OTHER_CONTACT = {"id": "4a6c8e20-0000-4000-8000-000000000002",
+                              "type": "КонтактныеЛица", "name": "Інша контактна особа (mock)"}
+_MOCK_CLIENT_OTHER_LOGINS: dict[str, dict] = {"380509990000": _MOCK_CLIENT_OTHER_CONTACT}
+_MOCK_CLIENT_PROFILE_FIELDS = ("name", "last_name", "middle_name", "birth_date")
+_MOCK_CLIENT_PROFILES: dict[str, dict] = {}
+
+
+def reset_mock_client_profiles() -> None:
+    """Clears the mock client profile fields and the other contact's bound logins (the auth
+    mocks own _MOCK_CLIENT_EPOCH)."""
+    _MOCK_CLIENT_PROFILES.clear()
+    _MOCK_CLIENT_OTHER_LOGINS.clear()
+    _MOCK_CLIENT_OTHER_LOGINS["380509990000"] = _MOCK_CLIENT_OTHER_CONTACT
+
+
+def _mock_normalize_login(raw: Any, what: str = "login") -> str:
+    login = str(raw or "").strip()
+    if not login:
+        raise ParameterError(f"{what} is required: a phone number or an e-mail")
+    return login.lower() if "@" in login else "".join(ch for ch in login if ch in "0123456789")
+
+
+def _mock_login_contact(login: str) -> dict | None:
+    if login in _MOCK_CLIENT_EPOCH:
+        return _MOCK_CLIENT_CONTACT
+    return _MOCK_CLIENT_OTHER_LOGINS.get(login)
+
+
+def _mock_profile_view(login: str, contact: dict) -> dict:
+    fields = _MOCK_CLIENT_PROFILES.get(contact["id"], {})
+    if contact is _MOCK_CLIENT_CONTACT:
+        logins = list(_MOCK_CLIENT_EPOCH)
+    else:
+        logins = [k for k, c in _MOCK_CLIENT_OTHER_LOGINS.items() if c is contact]
+    return {"login": login, "contact": dict(contact),
+            **{k: fields.get(k) or None for k in _MOCK_CLIENT_PROFILE_FIELDS},
+            "logins": [{"login": k, "status": "Active", "is_current": k == login}
+                       for k in sorted(logins)]}
+
+
+def _mock_client_profile(method: str, path: str, kw: dict) -> dict:
+    login = _mock_normalize_login((kw.get("params") or {}).get("login"))
+    contact = _mock_login_contact(login)
+    if contact is None:
+        raise NotConfirmedError(f"Client login {login} is not confirmed")
+    if method == "GET":
+        return {"data": _mock_profile_view(login, contact)}
+    body = kw.get("json")
+    if not isinstance(body, dict):
+        raise ParameterError("Request body must be a JSON object")
+    if path.endswith("/logins"):
+        if set(body) - {"new_login"}:
+            raise ParameterError("Unknown key; accepted: new_login")
+        new_login = _mock_normalize_login(body.get("new_login"), "new_login")
+        owner = _mock_login_contact(new_login)
+        if owner is not None and owner is not contact:
+            raise ConflictError(f"Login {new_login} is registered for another client")
+        changed = owner is None
+        if changed:
+            if contact is _MOCK_CLIENT_CONTACT:
+                _MOCK_CLIENT_EPOCH[new_login] = 0
+            else:
+                _MOCK_CLIENT_OTHER_LOGINS[new_login] = contact
+        return {"data": {**_mock_profile_view(login, contact), "changed": changed}}
+    if set(body) - set(_MOCK_CLIENT_PROFILE_FIELDS):
+        raise ParameterError("Unknown key; accepted: " + ", ".join(_MOCK_CLIENT_PROFILE_FIELDS))
+    new = dict(_MOCK_CLIENT_PROFILES.get(contact["id"], {}))
+    for key, value in body.items():
+        text = None if value is None else str(value).strip() or None
+        if key == "birth_date" and text is not None:
+            if not _ISO_DATE.fullmatch(text):
+                raise ParameterError("birth_date must be YYYY-MM-DD")
+            try:
+                date.fromisoformat(text)
+            except ValueError:
+                raise ParameterError("birth_date must be YYYY-MM-DD") from None
+        new[key] = text
+    old = _MOCK_CLIENT_PROFILES.get(contact["id"], {})
+    changed = any(new.get(k) != old.get(k) for k in _MOCK_CLIENT_PROFILE_FIELDS)
+    _MOCK_CLIENT_PROFILES[contact["id"]] = new
+    return {"data": {**_mock_profile_view(login, contact), "changed": changed}}
+
+
 def _mock_response(method: str, path: str, kw: dict) -> Any:
     if path.endswith("/health"):
         return {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": True, "mock": True}
@@ -2223,6 +2387,8 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return _mock_client_auth_start(kw)
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/revoke":
         return _mock_client_auth_revoke(kw)
+    if path.rstrip("/") in ("ai/v1/client/profile", "ai/v1/client/profile/logins"):
+        return _mock_client_profile(method, path.rstrip("/"), kw)
     if path.rstrip("/") == "ai/v1/eventlog":
         return _mock_event_log(kw)
     if path.rstrip("/") == "ai/v1/client/orders":
