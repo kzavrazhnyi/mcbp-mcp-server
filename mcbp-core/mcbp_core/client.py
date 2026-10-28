@@ -1570,8 +1570,9 @@ _MOCK_FUNCTIONS: dict[str, dict] = {}
 _MOCK_IDEAS: dict[str, dict] = {}
 # Value names of Enum.MCBP_FunctionsTypes as exported from the base; the real route reads them
 # from metadata.
-_FUNCTION_TYPES = ("Basic", "Common", "AutomaticActions", "DataExchange",
-                   "ArtificialIntelligence", "SupportService", "AdvancedAnalytics")
+_FUNCTION_TYPES = ("Basic", "Common", "CyberneticManagement", "ArtificialIntelligence",
+                   "IntegrationExchange", "IntegrationTransformation", "RoboticActions",
+                   "AdvancedAnalytics", "SupportService", "WebApp", "MCP", "AIAgents")
 _FUNCTION_DESCRIPTION_MAX = 150
 _FUNCTION_FIELDS = ("description", "functions_type", "deletion_mark", "specification", "ideas",
                     "project", "parent_id", "is_folder", "documentation")
