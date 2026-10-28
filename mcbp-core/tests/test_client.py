@@ -677,6 +677,37 @@ async def test_health_is_admin_only_on_json_true(raw: object, expected: bool):
 
 
 @respx.mock
+async def test_health_passes_version_when_sent():
+    respx.get("http://test/ai/v1/health").mock(
+        return_value=httpx.Response(
+            200, json={"status": "ok", "service": "MCBP_AI", "key": True, "version": "1.0.40.7"}
+        )
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        assert (await client.health())["version"] == "1.0.40.7"
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.parametrize("body_extra", [{}, {"version": None}, {"version": ""}])
+@respx.mock
+async def test_health_omits_version_when_base_sends_none(body_extra: dict):
+    respx.get("http://test/ai/v1/health").mock(
+        return_value=httpx.Response(
+            200, json={"status": "ok", "service": "MCBP_AI", "key": True, **body_extra}
+        )
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        assert "version" not in await client.health()
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
 async def test_health_returns_real_key_false():
     respx.get("http://test/ai/v1/health").mock(
         return_value=httpx.Response(200, json={"status": "ok", "service": "MCBP_AI", "key": False})

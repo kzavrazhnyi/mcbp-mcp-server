@@ -506,13 +506,18 @@ class MCBPClient:
         payload = await self._request("GET", "/ai/v1/health")
         if not isinstance(payload, dict):
             payload = {}
-        return {
+        result = {
             "status": payload.get("status", "ok"),
             "service": payload.get("service", "MCBP_AI"),
             "key": bool(payload.get("key", True)),
             # A base without the field grants no admin rights: the /ui hides admin-only items.
             "is_admin": payload.get("is_admin") is True,
         }
+        # Older bases send no release string: the key stays absent rather than null.
+        version = payload.get("version")
+        if isinstance(version, str) and version:
+            result["version"] = version
+        return result
 
     async def list_catalog(self, type_: str, cursor: str | None, limit: int, q: str | None,
                            fields: list | str | None = None) -> dict:
