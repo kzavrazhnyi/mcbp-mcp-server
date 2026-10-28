@@ -138,3 +138,11 @@ class ConflictError(MCBPError):
 
     code = "CONFLICT"
     http_status = 409
+
+
+class LockedError(ConflictError):
+    """The target object is locked by another session (`LOCKED`) — nothing was written; the
+    caller retries later. Subclasses ConflictError so `except ConflictError` still catches it."""
+
+    code = "LOCKED"
+    http_status = 409

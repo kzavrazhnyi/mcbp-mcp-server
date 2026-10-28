@@ -9,9 +9,11 @@ import respx
 
 from mcbp_core.client import ConnectionConfig, MCBPClient
 from mcbp_core.errors import (
+    ConflictError,
     ConversionNotConfiguredError,
     ForbiddenError,
     LicenseRequiredError,
+    LockedError,
     NotFoundError,
     ParameterError,
     PlusRequiredError,
@@ -792,3 +794,35 @@ async def test_forbidden_envelope_typed_as_forbidden_not_upstream():
         assert exc_info.value.http_status == 403
     finally:
         await client.shutdown()
+
+
+@respx.mock
+async def test_locked_envelope_typed_as_locked_error():
+    respx.post("http://test/ai/v1/objects/X").mock(
+        return_value=httpx.Response(409, json={"error": {"code": "LOCKED", "message": "locked"}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(LockedError) as exc:
+            await client.create_object("X", {})
+    finally:
+        await client.shutdown()
+    assert isinstance(exc.value, ConflictError)
+    assert exc.value.code == "LOCKED" and exc.value.http_status == 409
+
+
+@respx.mock
+async def test_conflict_envelope_typed_as_plain_conflict_error():
+    respx.post("http://test/ai/v1/objects/X").mock(
+        return_value=httpx.Response(409, json={"error": {"code": "CONFLICT", "message": "stale"}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(ConflictError) as exc:
+            await client.create_object("X", {})
+    finally:
+        await client.shutdown()
+    assert not isinstance(exc.value, LockedError)
+    assert exc.value.code == "CONFLICT"

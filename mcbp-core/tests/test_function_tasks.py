@@ -10,9 +10,9 @@ import respx
 
 from mcbp_core.client import ConnectionConfig, MCBPClient
 from mcbp_core.errors import (
-    ConflictError,
     ForbiddenError,
     LicenseRequiredError,
+    LockedError,
     NotConfiguredError,
     NotFoundError,
     ParameterError,
@@ -86,7 +86,7 @@ async def test_update_passes_task_param_and_empty_strings_as_null():
     (403, "FORBIDDEN", ForbiddenError),
     (403, "LICENSE_REQUIRED", LicenseRequiredError),
     (404, "NOT_FOUND", NotFoundError),
-    (409, "LOCKED", ConflictError),
+    (409, "LOCKED", LockedError),
     (500, "WRITE_FAILED", WriteFailedError),
 ])
 @respx.mock
