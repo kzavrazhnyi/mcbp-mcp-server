@@ -40,7 +40,7 @@ server is the thin MCP adapter in front of it.
 
 ## Tools
 
-14 read tools are always registered. Eight write tools appear only when `MCP_ALLOW_WRITE` is on.
+15 read tools are always registered. 13 write tools appear only when `MCP_ALLOW_WRITE` is on.
 
 | Tool | What it does |
 |---|---|
@@ -69,6 +69,13 @@ server is the thin MCP adapter in front of it.
 | `set_bug_status` *(gated)* | Set the status (New / Confirmed / Fixed / Verified / Rejected) of one MCBP_Bugs item |
 | `list_function_tasks` | Tracker tasks whose subject is one MCBP_Functions item, newest first |
 | `upsert_function_task` *(gated)* | Create or update one tracker task of an MCBP_Functions item natively |
+| `exchange_enqueue` *(gated)* | Put one existing object into an exchange node's queue (its "Manually" registration rule) |
+| `exchange_run` *(gated)* | Run the exchange with a node now — sends the node's whole unprocessed queue |
+| `exchange_result` | What happened to one object in the exchange: queue rows (`processed`, error text, `receiver_id`) and the match |
+
+Prompt `setup_exchange` (arguments `object_type`, optional `target_base`): for an agent connected to
+two servers (source and target base) — read-only analysis, a numbered plan confirmed by the user,
+journalled writes, then a test exchange `exchange_enqueue → exchange_run → exchange_result`.
 
 The model is expected to walk `list_metadata → describe_metadata → search/filter → get_object`.
 Errors are deliberately not swallowed: an unknown field comes back as `BAD_PARAMETER` naming that
@@ -124,7 +131,7 @@ claude mcp add mcbp-ai --env ONEC_BASE_URL=http://host/base/hs/mcbp_ai \
 | `ONEC_TIMEOUT` | no | `30` | Request timeout, seconds |
 | `ONEC_POOL_MAX` | no | `10` | Connection pool size |
 | `ONEC_VERIFY_SSL` | no | `1` | `0` for self-signed intranet publications |
-| `MCP_ALLOW_WRITE` | no | `0` | `1` enables the eight write tools |
+| `MCP_ALLOW_WRITE` | no | `0` | `1` enables the write tools |
 
 ### `ONEC_BASE_URL` — leave off the `/ai/v1`
 

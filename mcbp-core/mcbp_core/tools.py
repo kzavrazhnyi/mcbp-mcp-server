@@ -230,6 +230,40 @@ async def _upsert_function_task(c: MCBPClient, a: dict) -> Any:
     )
 
 
+async def _exchange_enqueue(c: MCBPClient, a: dict) -> Any:
+    return await c.exchange_enqueue(a["base"], metadata=a["metadata"], type_=a["type"],
+                                    object_id=a["id"])
+
+
+async def _exchange_run(c: MCBPClient, a: dict) -> Any:
+    return await c.exchange_run(a["base"])
+
+
+async def _exchange_result(c: MCBPClient, a: dict) -> Any:
+    return await c.exchange_result(a["base"], metadata=a["metadata"], type_=a["type"],
+                                   object_id=a["id"])
+
+
+_EXCHANGE_BASE = {"type": "string",
+                  "description": "Identifier вузла обміну (елемент довідника "
+                                 "MCBP_InformationBases), напр. DemoBASTrade"}
+_EXCHANGE_OBJECT_PARAMS = _params(
+    {"base": _EXCHANGE_BASE,
+     "metadata": {"type": "string", "description": "Вид: catalog, document, ..."},
+     "type": {"type": "string", "description": "Ім'я об'єкта метаданих, напр. РеализацияТоваровУслуг"},
+     "id": {"type": "string", "description": "UUID наявного об'єкта (Ref.Data)"}},
+    ["base", "metadata", "type", "id"],
+)
+_EXCHANGE_COMMON_UA = (
+    "Потрібні ліцензії CyberneticManagement, IntegrationExchange, IntegrationTransformation "
+    "(інакше LICENSE_REQUIRED) і право Update на черзі обміну (інакше FORBIDDEN)."
+)
+_EXCHANGE_COMMON_EN = (
+    "Needs the CyberneticManagement, IntegrationExchange and IntegrationTransformation licences "
+    "(else LICENSE_REQUIRED) and the Update right on the exchange queue (else FORBIDDEN)."
+)
+
+
 # --- Registry ---
 # ORDER MATTERS: MockProvider calls TOOLS[0], so search_catalog must stay first.
 # Introspection tools were appended at the end; the "structure first" priority is set in
@@ -1210,6 +1244,68 @@ TOOLS: dict[str, ToolSpec] = {
             "NOT_FOUND. Unknown, unconfirmed login or no allowed counterparty -> NOT_CONFIRMED; "
             "blank login or non-UUID `counterparty` -> BAD_PARAMETER; a base without the client "
             "login catalogs -> NOT_CONFIGURED."
+        )),
+    "exchange_enqueue": ToolSpec(
+        "exchange_enqueue",
+        "Крок 1 з 3 тестового обміну (exchange_enqueue -> exchange_run -> exchange_result): "
+        "ставить ОДИН наявний об'єкт у чергу обміну з вузлом `base` за його правилом реєстрації "
+        "«Manually». Нічого ще не відправляє. Відповідь {\"queued\": true}. BAD_PARAMETER — "
+        "немає поля або `id` не UUID; NOT_FOUND — немає вузла чи об'єкта; NOT_CONFIGURED — для "
+        "цього типу й вузла немає правила реєстрації Manually; CONDITION_FAILED — об'єкт не "
+        "проходить умову виконання правила. " + _EXCHANGE_COMMON_UA,
+        _EXCHANGE_OBJECT_PARAMS,
+        _exchange_enqueue,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Step 1 of 3 of a test exchange (exchange_enqueue -> exchange_run -> "
+            "exchange_result): puts ONE existing object into the exchange queue of node `base` "
+            "through the node's \"Manually\" registration rule. Sends nothing yet. Returns "
+            "{\"queued\": true}. BAD_PARAMETER -> a missing field or `id` not a UUID; NOT_FOUND "
+            "-> no such node or object; NOT_CONFIGURED -> no Manually registration rule for "
+            "this type and node; CONDITION_FAILED -> the object fails the rule's execution "
+            "condition. " + _EXCHANGE_COMMON_EN
+        )),
+    "exchange_run": ToolSpec(
+        "exchange_run",
+        "Крок 2 з 3: запускає обмін з вузлом `base` зараз і відправляє дані в іншу базу. "
+        "Відправляє ВСІ необроблені рядки черги цього вузла, а не лише щойно поставлений об'єкт "
+        "(залежні об'єкти, поставлені раніше, теж підуть). Відповідь {\"ok\": true} означає лише "
+        "те, що обмін виконано; що сталося з об'єктом — дивись exchange_result. "
+        + _EXCHANGE_COMMON_UA,
+        _params({"base": _EXCHANGE_BASE}, ["base"]),
+        _exchange_run,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Step 2 of 3: runs the exchange with node `base` now and sends data to the other "
+            "base. It flushes the node's WHOLE queue — every unprocessed row, not just the object "
+            "you just enqueued (dependent objects queued earlier go too). {\"ok\": true} only "
+            "means the exchange ran; check what happened to the object with exchange_result. "
+            + _EXCHANGE_COMMON_EN
+        )),
+    "exchange_result": ToolSpec(
+        "exchange_result",
+        "Крок 3 з 3 (лише читання, нічого не змінює): що сталося з одним об'єктом в обміні з "
+        "вузлом `base`. `queue` — рядки черги цього об'єкта й вузла, найновіші першими: "
+        "`processed: true` — передано, `receiver_id` — id об'єкта в базі-одержувачі; "
+        "`processed: false` з непорожнім `result` — помилка передачі (тут і помилки "
+        "конвертації) — передай її текст користувачу дослівно. `exchange` — рядок "
+        "MCBP_DataExchange {key, information, exchangedata}, коли об'єкт зіставлено, інакше "
+        "null. NOT_FOUND — для цього об'єкта й вузла нічого не ставили в чергу й не "
+        "обмінювали. " + _EXCHANGE_COMMON_UA,
+        _EXCHANGE_OBJECT_PARAMS,
+        _exchange_result,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Step 3 of 3 (read-only, changes nothing): what happened to one object in the "
+            "exchange with node `base`. `queue` holds the queue rows of that object and node, "
+            "newest first: `processed: true` -> delivered, `receiver_id` is the object's id in "
+            "the receiving base; `processed: false` with a non-empty `result` -> the transfer "
+            "failed and `result` is the error text (conversion errors appear here) — report it "
+            "to the user verbatim. `exchange` is the MCBP_DataExchange row {key, information, "
+            "exchangedata} when the object is matched, else null. NOT_FOUND -> nothing was "
+            "queued or exchanged for that object and node. " + _EXCHANGE_COMMON_EN
         )),
 }
 

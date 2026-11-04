@@ -27,6 +27,7 @@ from mcp.server.stdio import stdio_server
 
 from mcbp_mcp_server import __version__
 from mcbp_mcp_server.credentials import ClientPool
+from mcbp_mcp_server.prompts import make_on_get_prompt, make_on_list_prompts
 from mcbp_mcp_server.registry import make_on_call_tool, make_on_list_tools
 
 log = logging.getLogger("mcbp_mcp_server")
@@ -184,6 +185,8 @@ def create_server() -> Server[AppContext]:
         lifespan=lifespan,
         on_list_tools=make_on_list_tools(allow_write),
         on_call_tool=make_on_call_tool(allow_write),
+        on_list_prompts=make_on_list_prompts(),
+        on_get_prompt=make_on_get_prompt(),
     )
 
 

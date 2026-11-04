@@ -132,6 +132,14 @@ class NotConfiguredError(MCBPError):
     http_status = 422
 
 
+class ConditionFailedError(MCBPError):
+    """`/exchange/enqueue`: the object fails the execution condition of the node's "Manually"
+    registration rule (`CONDITION_FAILED`) — nothing was queued."""
+
+    code = "CONDITION_FAILED"
+    http_status = 422
+
+
 class ConflictError(MCBPError):
     """An optimistic-revision write found a newer stored revision (`CONFLICT`) — nothing was
     written; the caller re-reads, merges and retries."""

@@ -32,6 +32,7 @@ import httpx
 
 from mcbp_core.errors import (
     AuthError,
+    ConditionFailedError,
     ConflictError,
     ConversionChangedError,
     ConversionNotConfiguredError,
@@ -72,6 +73,7 @@ _ERROR_CODE_MAP: dict[str, type[MCBPError]] = {
     "PLUS_REQUIRED": PlusRequiredError,
     "CONVERSION_NOT_CONFIGURED": ConversionNotConfiguredError,
     "CONVERSION_CHANGED": ConversionChangedError,
+    "CONDITION_FAILED": ConditionFailedError,
     "CONFLICT": ConflictError,
     "LOCKED": LockedError,
     "NOT_CONFIGURED": NotConfiguredError,
@@ -1301,6 +1303,37 @@ class MCBPClient:
             params=params, json=body,
         )
 
+    # --- Exchange with another base (one route template: POST /ai/v1/exchange/{action}) ---
+    # Every action needs the CyberneticManagement + IntegrationExchange + IntegrationTransformation
+    # licences (else LICENSE_REQUIRED) and the Update right on the exchange queue (else FORBIDDEN).
+    # `base` is the Identifier of an MCBP_InformationBases item (the exchange node). POST is never
+    # retried (`_RETRYABLE_METHODS`): a repeated enqueue/run could queue or send twice.
+    async def exchange_enqueue(self, base: str, *, metadata: str, type_: str,
+                               object_id: str) -> dict:
+        """Puts one existing object into node `base`'s exchange queue via its "Manually"
+        registration rule. {"queued": true}. 400 BAD_PARAMETER (missing field / id not a UUID),
+        404 NOT_FOUND (base or object), 422 NOT_CONFIGURED (no Manually rule for this type and
+        base), 422 CONDITION_FAILED (the object fails the rule's execution condition)."""
+        return await self._request("POST", "/ai/v1/exchange/enqueue", json={
+            "base": base, "metadata": metadata, "type": type_, "id": object_id,
+        })
+
+    async def exchange_run(self, base: str) -> dict:
+        """Runs the exchange with node `base` now: sends EVERY unprocessed queue row of that node,
+        not just the last enqueued object. {"ok": true}."""
+        return await self._request("POST", "/ai/v1/exchange/run", json={"base": base})
+
+    async def exchange_result(self, base: str, *, metadata: str, type_: str,
+                              object_id: str) -> dict:
+        """Read-only (POST only because of the route template): what happened to one object in
+        the exchange with node `base`. {"object": {"id","presentation"}, "queue": [{"processed",
+        "result","date_execution","receiver_id","user"}, ...] newest first, "exchange":
+        {"key","information","exchangedata"} | None}. 404 NOT_FOUND when nothing was queued or
+        exchanged for that object and node."""
+        return await self._request("POST", "/ai/v1/exchange/result", json={
+            "base": base, "metadata": metadata, "type": type_, "id": object_id,
+        })
+
 
 # --- Mock data so the backend boots and the AI loop is testable without BAS ---
 # Fixtures deliberately mirror a real BAS response slice: Cyrillic type names
@@ -2410,6 +2443,8 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return _mock_project_upsert(kw)
     if method == "POST" and path.startswith("ai/v1/bugs/") and path.endswith("/status"):
         return _mock_bug_status(path, kw)
+    if method == "POST" and path.startswith("ai/v1/exchange/"):
+        return _mock_exchange(path.rstrip("/").rsplit("/", 1)[-1], kw.get("json"))
     if "/metadata/" in path:
         return _mock_metadata(path)
     if method == "PATCH" and "ai/v1/object/" in path:
@@ -2511,6 +2546,36 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
     if method == "POST" and "/objects/" in path:
         return {"type": path.split("/")[-1], "data": {"ref": "new-ref-001", "created": True}}
     return {"data": None}
+
+
+_EXCHANGE_ACTIONS = ("enqueue", "run", "result")
+
+
+def _mock_exchange(action: str, body: Any) -> dict:
+    """Stateless mock of POST /ai/v1/exchange/{action}: validates the body like BAS does and
+    answers the success shape — the result of a delivered object."""
+    if action not in _EXCHANGE_ACTIONS:
+        raise NotFoundError(f"Unknown exchange action {action}; available: "
+                            + ", ".join(_EXCHANGE_ACTIONS))
+    if not isinstance(body, dict):
+        raise ParameterError("Request body must be a JSON object")
+    required = ("base",) if action == "run" else ("base", "metadata", "type", "id")
+    missing = [k for k in required if not str(body.get(k) or "").strip()]
+    if missing:
+        raise ParameterError("Missing required field(s): " + ", ".join(missing))
+    if action == "run":
+        return {"ok": True}
+    try:
+        uuid.UUID(str(body["id"]))
+    except ValueError:
+        raise ParameterError(f"id is not a UUID: {body['id']}") from None
+    if action == "enqueue":
+        return {"queued": True}
+    return {"object": {"id": body["id"], "presentation": f"<mock {body['type']}>"},
+            "queue": [{"processed": True, "result": "OK!", "date_execution": _mock_now(),
+                       "receiver_id": "c52be10f-0000-4000-8000-000000000001",
+                       "user": "<mock user>"}],
+            "exchange": None}
 
 
 # Mock for structure introspection — the shape mirrors the real ai_metadata_get.

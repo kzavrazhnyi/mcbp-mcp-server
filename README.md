@@ -74,7 +74,9 @@ The full tool list, every environment variable, security notes and troubleshooti
 
 ## Tools
 
-14 read tools are always registered; eight write tools appear only when `MCP_ALLOW_WRITE=1`.
+15 read tools are always registered; 13 write tools appear only when `MCP_ALLOW_WRITE=1`.
+The `setup_exchange` prompt walks an agent connected to two bases through setting up and testing
+an exchange (`exchange_enqueue → exchange_run → exchange_result`).
 
 ```
 list_metadata → describe_metadata → search_catalog / filter_catalog / get_documents → get_object

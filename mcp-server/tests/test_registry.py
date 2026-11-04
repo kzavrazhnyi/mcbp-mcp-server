@@ -54,17 +54,38 @@ async def test_inventory_matches_registry_order_with_write():
     assert names == [s.name for s in tool_specs(surface="mcp", include_write=True)]
 
 
-async def test_gating_fourteen_without_flag_twentyfive_with():
+async def test_gating_fifteen_without_flag_twentyeight_with():
     async with Client(_mock_server(allow_write=False)) as client:
         without = await client.list_tools()
     async with Client(_mock_server(allow_write=True)) as client:
         with_flag = await client.list_tools()
-    assert len(without.tools) == 14
-    assert len(with_flag.tools) == 25
+    assert len(without.tools) == 15
+    assert len(with_flag.tools) == 28
+    assert "exchange_result" in {t.name for t in without.tools}
     added = {t.name for t in with_flag.tools} - {t.name for t in without.tools}
     assert added == {"write_object", "save_context", "patch_object", "set_function_status",
                      "upsert_function", "upsert_idea", "upsert_function_task",
-                     "set_register_record", "upsert_project", "upsert_bug", "set_bug_status"}
+                     "set_register_record", "upsert_project", "upsert_bug", "set_bug_status",
+                     "exchange_enqueue", "exchange_run"}
+
+
+async def test_exchange_round_trip_in_mock_mode():
+    obj = {"base": "DemoBASTrade", "metadata": "document", "type": "РеализацияТоваровУслуг",
+           "id": "00485286-a015-11ea-826d-782bcbe5684f"}
+    async with Client(_mock_server(allow_write=True)) as client:
+        queued = await client.call_tool("exchange_enqueue", obj)
+        ran = await client.call_tool("exchange_run", {"base": "DemoBASTrade"})
+        result = await client.call_tool("exchange_result", obj)
+    assert queued.is_error is not True and '"queued": true' in queued.content[0].text
+    assert ran.is_error is not True and '"ok": true' in ran.content[0].text
+    assert result.is_error is not True and '"processed": true' in result.content[0].text
+
+
+async def test_exchange_run_unknown_without_write_flag():
+    async with Client(_mock_server(allow_write=False)) as client:
+        result = await client.call_tool("exchange_run", {"base": "DemoBASTrade"})
+    assert result.is_error is True
+    assert "Unknown tool" in result.content[0].text
 
 
 async def test_set_register_record_call_in_mock_mode():
