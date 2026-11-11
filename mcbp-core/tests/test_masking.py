@@ -476,6 +476,144 @@ def test_force_mask_fields_override_adds_to_defaults():
     assert result["data"][0]["СпеціальнеПоле"] != "42"
 
 
+# --- Closing default-open types and per-type field rules ------------------------------
+
+def _classifier_with_stores(name: str) -> str | None:
+    return {"Склады": "Справочник.Склады", "РеализацияТоваров": "Документ.РеализацияТоваров"}.get(
+        name
+    ) or _classifier(name)
+
+
+def _store_payload() -> dict:
+    return {
+        "data": [
+            {
+                "Ref": _ref("Склады", "st-1", "Склад Центральний"),
+                "Description": "Склад Центральний",
+                "Склад": _ref("Склады", "st-1", "Склад Центральний"),
+            }
+        ]
+    }
+
+
+def test_default_open_store_catalog_stays_plain_without_override():
+    result = Masker(type_classifier=_classifier_with_stores).mask(_store_payload())
+    row = result["data"][0]
+    assert row["Ref"]["Presentation"] == "Склад Центральний"
+    assert row["Description"] == "Склад Центральний"
+    assert row["Склад"]["Presentation"] == "Склад Центральний"
+
+
+def test_mask_type_exact_closes_default_open_catalog_reference_and_row_strings():
+    policy = MaskingPolicy.from_dict({"mask_type_exact": ["Справочник.Склады"]})
+    masker = Masker(type_classifier=_classifier_with_stores, policy=policy)
+    result = masker.mask(_store_payload())
+    row = result["data"][0]
+    assert row["Ref"]["Presentation"].startswith("Склады·")
+    assert row["Склад"]["Presentation"].startswith("Склады·")
+    assert row["Description"] != "Склад Центральний"
+    # Other default-open catalogs are untouched.
+    other = masker.mask({"data": [{"Ref": _ref("Номенклатура", "n-1", "Стілець"),
+                                   "Description": "Стілець"}]})
+    assert other["data"][0]["Ref"]["Presentation"] == "Стілець"
+    assert other["data"][0]["Description"] == "Стілець"
+
+
+def test_mask_type_exact_closes_one_document_type_despite_prefix():
+    policy = MaskingPolicy.from_dict({"mask_type_exact": ["Документ.РеализацияТоваров"]})
+    masker = Masker(type_classifier=_classifier_with_stores, policy=policy)
+    payload = {
+        "data": [
+            {
+                "Реализация": _ref("РеализацияТоваров", "d-1", "Реалізація 15 від 01.02.2026"),
+                "Заказ": _ref("ЗаказПокупателя", "d-2", "Замовлення 7 від 01.02.2026"),
+            }
+        ]
+    }
+    row = masker.mask(payload)["data"][0]
+    assert row["Реализация"]["Presentation"].startswith("РеализацияТоваров·")
+    assert row["Заказ"]["Presentation"] == "Замовлення 7 від 01.02.2026"
+
+
+def test_per_type_allow_opens_field_only_in_that_type():
+    policy = MaskingPolicy.from_dict({"allow_plain_type_fields": ["Справочник.Контрагенты.ВнутреннийКод"]})
+    masker = Masker(type_classifier=_classifier, policy=policy)
+    payload = {
+        "data": [
+            {"Ref": _ref("Контрагенты", "c-1", "Альфа"), "ВнутреннийКод": "abc"},
+            {"Ref": _ref("ДенежныеСредства", "r-1", "Рух"), "ВнутреннийКод": "abc"},
+        ]
+    }
+    result = masker.mask(payload)
+    assert result["data"][0]["ВнутреннийКод"] == "abc"
+    assert result["data"][1]["ВнутреннийКод"] != "abc"
+    # Without a row type (no Ref, no hint) the per-type rule never applies.
+    bare = masker.mask({"data": [{"ВнутреннийКод": "abc"}]})
+    assert bare["data"][0]["ВнутреннийКод"] != "abc"
+
+
+def test_per_type_allow_never_opens_forced_substring_field():
+    policy = MaskingPolicy.from_dict({
+        "allow_plain_type_fields": [
+            "Справочник.Контрагенты.ИНН",
+            "Справочник.Контрагенты.Телефон",
+        ],
+        "allow_plain_fields": [],
+    })
+    masker = Masker(type_classifier=_classifier, policy=policy)
+    payload = {"data": [{"Ref": _ref("Контрагенты", "c-1", "Альфа"),
+                         "ИНН": "1234567890", "Телефон": "+380501234567"}]}
+    row = masker.mask(payload)["data"][0]
+    assert row["ИНН"] != "1234567890"
+    assert row["Телефон"] != "+380501234567"
+
+
+def test_per_type_force_masks_number_only_in_that_type():
+    policy = MaskingPolicy.from_dict({"force_mask_type_fields": ["Справочник.Номенклатура.Цена"]})
+    masker = Masker(type_classifier=_classifier, policy=policy)
+    payload = {
+        "data": [
+            {"Ref": _ref("Номенклатура", "n-1", "Стілець"), "Цена": 1500.5},
+            {"Ref": _ref("Валюты", "v-1", "UAH"), "Цена": 1500.5},
+        ]
+    }
+    result = masker.mask(payload)
+    assert isinstance(result["data"][0]["Цена"], str)
+    assert result["data"][0]["Цена"] != "1500.5"
+    assert result["data"][1]["Цена"] == 1500.5
+    assert result["data"][0]["Ref"]["Presentation"] == "Стілець"
+
+
+def test_per_type_rules_apply_via_mask_hint_and_get_object_envelope():
+    policy = MaskingPolicy.from_dict({
+        "force_mask_type_fields": ["РегистрНакопления.ДенежныеСредства.Сумма"],
+        "allow_plain_type_fields": ["Справочник.Контрагенты.ВнутреннийКод"],
+    })
+    masker = Masker(type_classifier=_classifier, policy=policy)
+    balance = masker.mask(
+        {"type": "ДенежныеСредства", "data": [{"Сумма": 100}]},
+        type_name="ДенежныеСредства", kind="accumulationregister",
+    )
+    assert balance["data"][0]["Сумма"] != 100
+    obj = masker.mask({
+        "metadata": "catalog", "type": "Контрагенты",
+        "data": [{"ВнутреннийКод": "abc"}, {"Description": "Альфа"}],
+    })
+    assert obj["data"][0]["ВнутреннийКод"] == "abc"
+    assert obj["data"][1]["Description"] != "Альфа"
+
+
+def test_new_policy_keys_default_empty_and_merge_additively():
+    assert MaskingPolicy.default().mask_type_exact == ()
+    assert MaskingPolicy.default().allow_plain_type_fields == ()
+    assert MaskingPolicy.default().force_mask_type_fields == ()
+    merged = MaskingPolicy.from_dict({"mask_type_exact": ["Справочник.Склады"]}).merge(
+        {"mask_type_exact": ["Справочник.Склады", "Документ.X"]}
+    )
+    assert merged.mask_type_exact == ("Справочник.Склады", "Документ.X")
+    assert "Справочник.Склады" in merged.open_type_exact
+
+
 # --- Empty/blank values carry nothing to hide, in every branch ------------------------
 
 def test_empty_string_in_forced_field_stays_unmasked():

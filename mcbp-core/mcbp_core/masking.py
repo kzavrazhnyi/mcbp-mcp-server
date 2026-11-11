@@ -175,6 +175,13 @@ class MaskingPolicy:
     open_field_names: tuple[str, ...] = field(default_factory=tuple)
     allow_plain_fields: tuple[str, ...] = field(default_factory=tuple)
     force_mask_fields: tuple[str, ...] = field(default_factory=tuple)
+    # Exact dotted types CLOSED even when a default/override open list matches them
+    # (e.g. "Справочник.Склады", or one "Документ.X" despite the "Документ." prefix).
+    mask_type_exact: tuple[str, ...] = field(default_factory=tuple)
+    # Per-type field rules, "<dotted type>.<field pattern>" (e.g. "Справочник.Склады.Адрес"):
+    # apply only in rows whose context is exactly that dotted type.
+    allow_plain_type_fields: tuple[str, ...] = field(default_factory=tuple)
+    force_mask_type_fields: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def default(cls) -> MaskingPolicy:
@@ -205,6 +212,11 @@ class MaskingPolicy:
             open_field_names=_extend(self.open_field_names, "open_field_names"),
             allow_plain_fields=_extend(self.allow_plain_fields, "allow_plain_fields"),
             force_mask_fields=_extend(self.force_mask_fields, "force_mask_fields"),
+            mask_type_exact=_extend(self.mask_type_exact, "mask_type_exact"),
+            allow_plain_type_fields=_extend(
+                self.allow_plain_type_fields, "allow_plain_type_fields"
+            ),
+            force_mask_type_fields=_extend(self.force_mask_type_fields, "force_mask_type_fields"),
         )
 
     @classmethod
@@ -353,9 +365,24 @@ def _looks_like_aggregate_envelope(value: dict[str, Any]) -> bool:
 def _is_open_type(dotted: str | None, policy: MaskingPolicy) -> bool:
     if dotted is None:
         return False
+    if dotted in policy.mask_type_exact:
+        return False
     if dotted in policy.open_type_exact:
         return True
     return any(dotted.startswith(prefix) for prefix in policy.open_type_prefixes)
+
+
+def _matches_type_field(context: str | None, normalized: str, entries: tuple[str, ...]) -> bool:
+    """True when an entry "<dotted type>.<field pattern>" has its type equal to `context`
+    and its field pattern matching the normalized field name (same glob-lite as
+    `_matches_pattern`). The field part is after the LAST dot — field names have none."""
+    if context is None or not normalized:
+        return False
+    for entry in entries:
+        type_part, sep, field_part = entry.rpartition(".")
+        if sep and type_part == context and _matches_pattern(normalized, (field_part,)):
+            return True
+    return False
 
 
 def _b32(digest: bytes, length: int) -> str:
@@ -597,6 +624,14 @@ class Masker:
         if forced:
             return self._pseudonym_for_field(key, value)
 
+        # Per-type rules come AFTER the global forced check: a per-type allow can never
+        # open a forced-substring field (ІПН, phone, address, comment, ...).
+        if _matches_type_field(context, normalized, self._policy.force_mask_type_fields):
+            return self._pseudonym_for_field(key, value)
+
+        if _matches_type_field(context, normalized, self._policy.allow_plain_type_fields):
+            return value
+
         if key and _matches_pattern(normalized, self._policy.allow_plain_fields):
             return value
 
@@ -615,7 +650,11 @@ class Masker:
         if _UUID_RE.match(value):
             return value
 
-        row_open = context is not None and context in self._policy.open_type_exact
+        row_open = (
+            context is not None
+            and context in self._policy.open_type_exact
+            and context not in self._policy.mask_type_exact
+        )
         if row_open and not _looks_like_code(value):
             return value
 
