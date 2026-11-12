@@ -34,8 +34,15 @@ class RecordingClient:
     async def document_schema(self, type_):
         return self._record("document_schema", type_=type_)
 
-    async def register_balance(self, type_, filters, on=None):
-        return self._record("register_balance", type_=type_, filters=filters, on=on)
+    async def register_balance(self, type_, filters, on=None, *, table=None, date_from=None,
+                               date_to=None, account=None, corr_account=None, account_dr=None,
+                               account_cr=None, groupby=None, resources=None, limit=None):
+        kw = {"table": table, "date_from": date_from, "date_to": date_to, "account": account,
+              "corr_account": corr_account, "account_dr": account_dr,
+              "account_cr": account_cr, "groupby": groupby, "resources": resources,
+              "limit": limit}
+        return self._record("register_balance", type_=type_, filters=filters, on=on,
+                            **{k: v for k, v in kw.items() if v is not None})
 
     async def filter_catalog(self, type_, filters, orderby, desc, exclude_groups, limit,
                               cursor=None, fields=None, agg=None, groupby=None):
@@ -137,6 +144,57 @@ async def test_register_balance_passes_on_separately(client):
     assert method == "register_balance"
     assert kw["on"] == "2026-01-01"
     assert kw["filters"] == {"Контрагент": "uuid-1"}
+
+
+async def test_register_balance_routes_accounting_args_to_kwargs(client):
+    await TOOLS["get_register_balance"].executor(client, {
+        "type": "Хозрасчетный", "table": "balance_and_turnovers", "from": "2026-01-01",
+        "to": "2026-03-31", "account": ["361"], "groupby": ["ExtDimension1"],
+        "resources": ["Сумма"], "Организация": "org-1",
+    })
+    method, kw = client.calls[0]
+    assert method == "register_balance"
+    assert kw["filters"] == {"Организация": "org-1"}
+    assert kw["table"] == "balance_and_turnovers"
+    assert kw["date_from"] == "2026-01-01" and kw["date_to"] == "2026-03-31"
+    assert kw["account"] == ["361"]
+    assert kw["groupby"] == ["ExtDimension1"]
+    assert kw["resources"] == ["Сумма"]
+    assert kw["limit"] == 50  # tool-layer default for accounting calls
+
+
+async def test_register_balance_explicit_limit_wins(client):
+    await TOOLS["get_register_balance"].executor(
+        client, {"type": "Хозрасчетный", "table": "turnovers", "from": "2026-01-01",
+                 "corr_account": ["701"], "limit": 500})
+    _, kw = client.calls[0]
+    assert kw["limit"] == 500
+    assert kw["corr_account"] == ["701"]
+    assert kw["filters"] == {}
+
+
+async def test_register_balance_lone_table_balance_gets_no_default_limit(client):
+    # May target an accumulation register, whose balance rejects `limit`.
+    await TOOLS["get_register_balance"].executor(
+        client, {"type": "ТоварыНаСкладах", "table": "balance", "Склад": "s-1"})
+    _, kw = client.calls[0]
+    assert kw["table"] == "balance"
+    assert "limit" not in kw
+    assert kw["filters"] == {"Склад": "s-1"}
+
+
+async def test_register_balance_account_on_balance_table_gets_default_limit(client):
+    await TOOLS["get_register_balance"].executor(
+        client, {"type": "Хозрасчетный", "table": "balance", "account": ["361"]})
+    _, kw = client.calls[0]
+    assert kw["limit"] == 50
+
+
+async def test_register_balance_accumulation_call_gets_no_default_limit(client):
+    await TOOLS["get_register_balance"].executor(
+        client, {"type": "MCBP_Debt", "filters": {"Контрагент": "uuid-1"}})
+    _, kw = client.calls[0]
+    assert "limit" not in kw and "table" not in kw
 
 
 async def test_filter_catalog_defaults(client):

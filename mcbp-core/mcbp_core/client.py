@@ -303,9 +303,11 @@ _KIND_TO_ALL_KEY = {
     "document": "documents",
     "informationregister": "informationregisters",
     "accumulationregister": "accumulationregisters",
+    "accountingregister": "accountingregisters",
     "enum": "enums",
     "task": "tasks",
     "chartofcharacteristictypes": "chartsofcharacteristictypes",
+    "chartofaccounts": "chartsofaccounts",
     "constant": "constants",
 }
 
@@ -627,13 +629,73 @@ class MCBPClient:
             "POST", f"/ai/v1/objects/{type_}", params=params or None, json=body,
         )
 
-    async def register_balance(self, type_: str, filters: dict, on: str | None = None) -> dict:
-        """Accumulation-register balance. Every query param is a dimension filter EXCEPT `on`
-        (YYYY-MM-DD), which is the date to compute the balance at — omitted means current."""
+    async def register_balance(self, type_: str, filters: dict, on: str | None = None, *,
+                               table: str | None = None, date_from: str | None = None,
+                               date_to: str | None = None,
+                               account: list[str] | str | None = None,
+                               corr_account: list[str] | str | None = None,
+                               account_dr: list[str] | str | None = None,
+                               account_cr: list[str] | str | None = None,
+                               groupby: list[str] | str | None = None,
+                               resources: list[str] | str | None = None,
+                               limit: int | None = None) -> dict:
+        """Register balance. Accumulation register: every query param is a dimension filter
+        EXCEPT `on` (YYYY-MM-DD, the balance date — omitted means current).
+
+        Accounting register (the keyword args): `table` = balance (default, at `on`) |
+        turnovers | balance_and_turnovers | drcr_turnovers (the last three need `date_from`;
+        `date_to` defaults to today). `account` / `corr_account` / `account_dr` / `account_cr`
+        are account codes or UUIDs, subaccounts included. `groupby` (<=4: ExtDimension1..N, a
+        balance dimension, CorrAccount, Period:month) adds detail — the account is always a
+        group. `resources` narrows the amount columns, `limit` caps the rows (`truncated`).
+        Remaining `filters` stay dimension / ExtDimension conditions. A lone `table="balance"`
+        is what an accumulation register computes anyway, so it passes through for both kinds.
+        A base whose MCBP_AI predates accounting balances either answers without a `table` key
+        (raised as ParameterError, never handed back as an accounting answer) or does not know
+        the accounting register at all (NotFoundError, re-raised with an update hint)."""
+        if corr_account and table != "turnovers":
+            raise ParameterError("corr_account applies to table='turnovers' only")
+        if (account_dr or account_cr) and table != "drcr_turnovers":
+            raise ParameterError("account_dr/account_cr apply to table='drcr_turnovers' only "
+                                 "- use 'account' with the other tables")
+        if account and table == "drcr_turnovers":
+            raise ParameterError("table='drcr_turnovers' takes account_dr / account_cr, not account")
+        accounting = {
+            "table": table, "from": date_from, "to": date_to,
+            "account": _csv(account) if account else None,
+            "corr_account": _csv(corr_account) if corr_account else None,
+            "account_dr": _csv(account_dr) if account_dr else None,
+            "account_cr": _csv(account_cr) if account_cr else None,
+            "groupby": _csv(groupby) if groupby else None,
+            "resources": _csv(resources) if resources else None,
+            "limit": limit,
+        }
+        accounting = {k: v for k, v in accounting.items() if v not in (None, "")}
         params = dict(filters)
         if on:
             params["on"] = on
-        return await self._request("GET", f"/ai/v1/registers/{type_}/balance", params=params)
+        params.update(accounting)
+        try:
+            result = await self._request("GET", f"/ai/v1/registers/{type_}/balance",
+                                         params=params)
+        except NotFoundError as exc:
+            if not accounting:
+                raise
+            raise NotFoundError(
+                f"{exc.message} - if this is an accounting register, MCBP_AI on this base may "
+                "predate accounting support - update the MCBP_AI module",
+                code=exc.code, http_status=exc.http_status,
+            ) from exc
+        # A lone table="balance" is valid on an accumulation register too, whose answer never
+        # carries `table` — only the other accounting arguments make the guard meaningful.
+        accounting_only = {k: v for k, v in accounting.items()
+                           if not (k == "table" and v == "balance")}
+        if accounting_only and isinstance(result, dict) and "table" not in result:
+            raise ParameterError(
+                "MCBP_AI on this base predates accounting balances (table/account/from on "
+                "register balance) - update the MCBP_AI configuration"
+            )
+        return result
 
     async def register_records(self, type_: str, date_from: str | None = None,
                                date_to: str | None = None, filters: dict | None = None,
@@ -651,7 +713,14 @@ class MCBPClient:
         "truncated"}. `groupby` — up to 4 fields, `Period:day|week|month|quarter|year` buckets
         the period; it needs `agg`. A base whose MCBP_AI predates register aggregation ignores
         both and answers raw rows — that is raised as ParameterError rather than handed back,
-        so nobody mistakes a page of rows for totals."""
+        so nobody mistakes a page of rows for totals.
+
+        Accounting register: rows are postings (AccountDr/AccountCr, ExtDimensionDr1..,
+        <Dimension>Dr/Cr, amounts; accounts carry Code/Description). `date_from` or
+        `filters={"Recorder": ...}` is required. An account filter takes subaccounts too;
+        `Account` / `ExtDimension` match either side / any position. `groupby` on accounts
+        groups by the exact account (no roll-up) — totals per account come from
+        `register_balance(table="turnovers")`."""
         if groupby and not agg:
             raise ParameterError("groupby needs agg - e.g. agg=[\"sum:*\", \"count\"]")
         params: dict[str, Any] = {}
@@ -1476,8 +1545,111 @@ def _mock_register_aggregates(type_: str, kw: dict) -> dict:
                              "Data": f"mock-{index}", "Metadata": name}
         row.update(measures)
         rows.append(row)
-    return {"metadata": "accumulationregister", "type": type_,
+    kind = "accountingregister" if _is_mock_accounting_register(type_) else "accumulationregister"
+    return {"metadata": kind, "type": type_,
             "groupby": groups or None, "aggregates": rows, "truncated": False}
+
+
+# Mock accounting register: its chart of accounts carries the SAME name, as in real bases, so
+# masking tests meet the chart/register name collision.
+MOCK_ACCOUNTING_REGISTER = "Хозрасчетный"
+
+_ACCOUNTING_BALANCE_PARAMS = frozenset({"table", "from", "to", "account", "corr_account",
+                                        "account_dr", "account_cr", "groupby", "resources",
+                                        "limit"})
+
+_ACCOUNTING_TABLES = ("balance", "turnovers", "balance_and_turnovers", "drcr_turnovers")
+
+_ACCOUNTING_SUFFIXES = {
+    "balance": ("BalanceDr", "BalanceCr"),
+    "turnovers": ("TurnoverDr", "TurnoverCr"),
+    "balance_and_turnovers": ("OpeningBalanceDr", "OpeningBalanceCr", "TurnoverDr",
+                              "TurnoverCr", "ClosingBalanceDr", "ClosingBalanceCr"),
+    "drcr_turnovers": ("Turnover",),
+}
+
+
+def _is_mock_accounting_register(type_: str) -> bool:
+    return type_.casefold() == MOCK_ACCOUNTING_REGISTER.casefold()
+
+
+def _mock_account(code: str, description: str) -> dict:
+    return {"Presentation": code, "Data": f"acc-{code}", "Metadata": MOCK_ACCOUNTING_REGISTER,
+            "Code": code, "Description": description}
+
+
+_MOCK_COUNTERPARTY = {"Presentation": "Альфа Трейд, ТОВ", "Data": "e3f1d9b6-0002",
+                      "Metadata": "Контрагенты"}
+
+
+def _mock_accounting_balance(type_: str, params: dict) -> dict:
+    """Mirrors the BAS accounting branch of GET /registers/{type}/balance (AccountingBalance):
+    explicit English-suffixed amount columns, accounts with Code/Description, the
+    `ext_dimension_types` legend keyed by account code."""
+    table = str(params.get("table") or "balance")
+    if table not in _ACCOUNTING_TABLES:
+        raise ParameterError(f"Unknown table '{table}' - use one of: "
+                             + ", ".join(_ACCOUNTING_TABLES))
+    if table == "balance" and (params.get("from") or params.get("to")):
+        raise ParameterError("'from'/'to' apply to the turnover tables - table=balance takes 'on'")
+    if table != "balance" and not params.get("from"):
+        raise ParameterError(f"table={table} needs 'from' (YYYY-MM-DD); 'to' defaults to today")
+    groups = [g.strip() for g in str(params.get("groupby") or "").split(",") if g.strip()]
+    if len(groups) > 4:
+        raise ParameterError(f"groupby takes at most 4 fields, got {len(groups)}")
+    resources = [r.strip() for r in str(params.get("resources") or "Сумма").split(",")
+                 if r.strip()]
+    accounts = ["AccountDr", "AccountCr"] if table == "drcr_turnovers" else ["Account"]
+    row: dict[str, Any] = {}
+    for column in accounts:
+        if column == "AccountCr":
+            row[column] = _mock_account("701", "Дохід від реалізації")
+        else:
+            row[column] = _mock_account("361", "Розрахунки з вітчизняними покупцями")
+    labels = list(accounts)
+    periodicity = None
+    for group in groups:
+        name, _, granularity = group.partition(":")
+        if name in accounts or name == "Account":
+            continue
+        if granularity:
+            periodicity = granularity.lower()
+            row["Period"] = "2026-01-01"
+            labels.append(f"Period:{periodicity}")
+        elif name.startswith("ExtDimension"):
+            row[name] = dict(_MOCK_COUNTERPARTY)
+            labels.append(name)
+        else:
+            row[name] = {"Presentation": f"<mock-{name}>", "Data": "mock-1", "Metadata": name}
+            labels.append(name)
+    for resource in resources:
+        for suffix in _ACCOUNTING_SUFFIXES[table]:
+            row[resource + suffix] = 1200.0 if suffix.endswith(("Dr", "Turnover")) else 0
+    return {"metadata": "accountingregister", "type": type_, "table": table,
+            "from": params.get("from"), "to": params.get("to"), "on": params.get("on"),
+            "periodicity": periodicity, "groupby": labels, "resources": resources,
+            "data": [row], "ext_dimension_types": {"361": ["Контрагенты", "Договоры"]},
+            "truncated": False}
+
+
+def _mock_accounting_records(type_: str, params: dict) -> dict:
+    """Mirrors raw postings of a correspondence accounting register (RegisterRecords)."""
+    if not params.get("from") and not params.get("f.Recorder"):
+        raise ParameterError("accounting register records need 'from' (YYYY-MM-DD) or "
+                             "f.Recorder - the posting journal is large")
+    rows = [
+        {"Period": "2026-08-01 00:00:00",
+         "Recorder": {"Presentation": "РН-00001", "Data": "doc-0101",
+                      "Metadata": "РеализацияТоваровУслуг"},
+         "LineNumber": 1, "Active": True,
+         "AccountDr": _mock_account("361", "Розрахунки з вітчизняними покупцями"),
+         "AccountCr": _mock_account("701", "Дохід від реалізації"),
+         "ExtDimensionDr1": dict(_MOCK_COUNTERPARTY),
+         "ExtDimensionTypeDr1": {"Presentation": "Контрагенты", "Data": "edt-1",
+                                 "Metadata": "ВидыСубконтоХозрасчетные"},
+         "Сумма": 1200.0, "Содержание": "Реалізація товарів"},
+    ]
+    return {"metadata": "accountingregister", "type": type_, "data": rows, "truncated": False}
 
 
 def _mock_aggregates(kw: dict) -> dict | None:
@@ -2669,7 +2841,18 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
             row.update(_mock_extra_fields(kw))
         return {"data": rows, "cursor": None}
     if "/registers/" in path and path.endswith("/balance"):
-        return {"type": path.split("/")[-2], "data": {"balance": 6200.0, "currency": "UAH"}}
+        params = kw.get("params") or {}
+        register = path.split("/")[-2]
+        if _is_mock_accounting_register(register):
+            return _mock_accounting_balance(register, params)
+        # Accumulation register, as in BSL RegisterBalance: a lone table=balance is what it
+        # computes anyway; any other accounting parameter is a mix-up of the two kinds.
+        mixed = [key for key in params if key in _ACCOUNTING_BALANCE_PARAMS
+                 and not (key == "table" and params[key] == "balance")]
+        if mixed:
+            raise ParameterError(f"'{mixed[0]}' applies to accounting registers only - "
+                                 f"{register} is an accumulation register")
+        return {"type": register, "data": {"balance": 6200.0, "currency": "UAH"}}
     if method == "POST" and "/registers/" in path and path.endswith("/records"):
         body = kw.get("json") or {}
         changed = [{"field": k, "old": None, "new": v} for k, v in body.items()]
@@ -2681,6 +2864,8 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
             return _mock_register_aggregates(path.split("/")[-2], kw)
         if params.get("groupby"):
             raise ParameterError("groupby needs agg")
+        if _is_mock_accounting_register(path.split("/")[-2]):
+            return _mock_accounting_records(path.split("/")[-2], params)
         rows = [
             {"Period": "2026-08-01 00:00:00",
              "Recorder": {"Presentation": "ЗП-00001", "Data": "doc-0001",
@@ -2736,11 +2921,16 @@ def _mock_metadata(path: str) -> Any:
                          {"name": "Номенклатура", "synonym": "Номенклатура"}],
             "documents": [{"name": "ЗаказПокупателя", "synonym": "Замовлення покупця"}],
             "informationregisters": [{"name": "MCBP_StatusFunctions", "synonym": "Статус функцій"}],
+            "accountingregisters": [{"name": MOCK_ACCOUNTING_REGISTER,
+                                     "synonym": "Журнал проводок"}],
+            "chartsofaccounts": [{"name": MOCK_ACCOUNTING_REGISTER, "synonym": "Хозрахунковий"}],
         }
     if len(parts) == 1:
         return {"metadata": parts[0].lower(), "count": 2,
                 "items": [{"name": "Контрагенты", "synonym": "Контрагенти"},
                           {"name": "Номенклатура", "synonym": "Номенклатура"}]}
+    if parts[0].lower() in ("accountingregisters", "accountingregister"):
+        return _mock_accounting_register_detail(parts[1])
     # detail — documents carry tabular sections (so tests exercise the summarize/select
     # view in `_describe_metadata_view`); catalogs typically don't.
     is_document = parts[0].lower() == "documents"
@@ -2767,4 +2957,48 @@ def _mock_metadata(path: str) -> Any:
                 {"name": "ProcentSkidki", "synonym": "Відсоток знижки", "types": ["Число"]},
             ]},
         ] if is_document else [],
+    }
+
+
+def _mock_accounting_register_detail(type_: str) -> dict:
+    """Mirrors MetadataDetail for an accounting register: balance flags on dimensions and
+    resources, the chart summary and the postings' `query_fields`."""
+    return {
+        "metadata": "accountingregister", "type": type_, "synonym": "Журнал проводок",
+        "dimensions": [
+            {"name": "Организация", "synonym": "Організація",
+             "types": ["Справочник.Организации"], "balance": True, "accounting_flag": None},
+            {"name": "Валюта", "synonym": "Валюта", "types": ["Справочник.Валюты"],
+             "balance": False, "accounting_flag": "Валютный"},
+        ],
+        "resources": [
+            {"name": "Сумма", "synonym": "Сума", "types": ["Число"], "digits": 15,
+             "fraction_digits": 2, "balance": True, "accounting_flag": None,
+             "ext_dimension_accounting_flag": None},
+            {"name": "ВалютнаяСумма", "synonym": "Валютна сума", "types": ["Число"],
+             "digits": 15, "fraction_digits": 2, "balance": False,
+             "accounting_flag": "Валютный", "ext_dimension_accounting_flag": None},
+        ],
+        "attributes": [{"name": "Содержание", "synonym": "Зміст", "types": ["Строка"],
+                        "length": 150}],
+        "correspondence": True,
+        "chart_of_accounts": {
+            "name": MOCK_ACCOUNTING_REGISTER, "synonym": "Хозрахунковий",
+            "max_ext_dimension_count": 3, "code_mask": "@@@.@@",
+            "ext_dimension_types": {"name": "ВидыСубконтоХозрасчетные",
+                                    "synonym": "Види субконто",
+                                    "types": ["Справочник.Контрагенты",
+                                              "Справочник.ДоговорыКонтрагентов"]},
+            "accounting_flags": [{"name": "Валютный", "synonym": "Валютний"}],
+            "ext_dimension_accounting_flags": [{"name": "Суммовой", "synonym": "Сумовий"}],
+        },
+        "query_fields": [
+            "Period", "Recorder", "LineNumber", "Active", "AccountDr", "AccountCr",
+            "ExtDimensionDr1", "ExtDimensionDr2", "ExtDimensionDr3",
+            "ExtDimensionCr1", "ExtDimensionCr2", "ExtDimensionCr3",
+            "ExtDimensionTypeDr1", "ExtDimensionTypeDr2", "ExtDimensionTypeDr3",
+            "ExtDimensionTypeCr1", "ExtDimensionTypeCr2", "ExtDimensionTypeCr3",
+            "Организация", "ВалютаDr", "ВалютаCr", "Сумма", "ВалютнаяСуммаDr",
+            "ВалютнаяСуммаCr", "Содержание",
+        ],
     }

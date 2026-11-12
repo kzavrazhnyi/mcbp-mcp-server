@@ -85,13 +85,37 @@ async def _get_schema(c: MCBPClient, a: dict) -> Any:
     return await c.document_schema(type_=a["type"])
 
 
+# Accounting-register arguments of get_register_balance -> register_balance kwargs. Everything
+# else outside type/filters/on stays a dimension filter, as before.
+_ACCOUNTING_BALANCE_ARGS = {"table": "table", "from": "date_from", "to": "date_to",
+                            "account": "account", "corr_account": "corr_account",
+                            "account_dr": "account_dr", "account_cr": "account_cr",
+                            "groupby": "groupby", "resources": "resources", "limit": "limit"}
+
+# Rows of an accounting answer when the model sets no limit: six amounts per resource per row.
+_ACCOUNTING_DEFAULT_LIMIT = 50
+
+
 async def _register_balance(c: MCBPClient, a: dict) -> Any:
-    # Accept dimensions either nested under "filters" or as top-level keys (besides "type"/"on").
+    # Accept dimensions either nested under "filters" or as top-level keys (besides "type"/"on"
+    # and the accounting arguments).
     filters = dict(a.get("filters") or {})
+    accounting: dict[str, Any] = {}
     for k, v in a.items():
-        if k not in ("type", "filters", "on"):
+        if k in ("type", "filters", "on"):
+            continue
+        if k in _ACCOUNTING_BALANCE_ARGS:
+            if v not in (None, "", []):
+                accounting[_ACCOUNTING_BALANCE_ARGS[k]] = v
+        else:
             filters[k] = v
-    return await c.register_balance(type_=a["type"], filters=filters, on=a.get("on"))
+    # Only for a call that is accounting for sure: a lone table="balance" may target an
+    # accumulation register, whose balance rejects `limit`.
+    table = accounting.get("table")
+    if ("account" in accounting or table not in (None, "balance")) and "limit" not in accounting:
+        accounting["limit"] = _ACCOUNTING_DEFAULT_LIMIT
+    return await c.register_balance(type_=a["type"], filters=filters, on=a.get("on"),
+                                    **accounting)
 
 
 async def _register_records(c: MCBPClient, a: dict) -> Any:
@@ -419,15 +443,50 @@ TOOLS: dict[str, ToolSpec] = {
         "з фільтрами за ВИМІРАМИ регістру. Точні імена вимірів бери з describe_metadata "
         "(вид AccumulationRegisters) — не вгадуй (напр. вимір може зватися Контрагент, а не "
         "counterparty). Значення-посилання (контрагент, організація, номенклатура) передавай "
-        "як UUID з Ref.Data. Приклад: {\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}.",
+        "як UUID з Ref.Data. Приклад: {\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}. "
+        "Регістр БУХГАЛТЕРІЇ (AccountingRegisters, журнал проводок): сальдо/обороти по РАХУНКУ. "
+        "`table`: balance (сальдо на дату `on`), turnovers (обороти за from/to), "
+        "balance_and_turnovers (сальдо на початок/обороти/сальдо на кінець — ОСВ), "
+        "drcr_turnovers (обороти Дт→Кт, кореспонденція); для трьох останніх `from` обов'язковий, "
+        "`to` без значення — сьогодні. account=[\"361\"] включає субрахунки. За замовчуванням — "
+        "один рядок на рахунок; groupby=[\"ExtDimension1\"] дає розріз за субконто "
+        "(`ext_dimension_types` у відповіді каже, що таке ExtDimensionN для кожного рахунку). "
+        "resources=[\"<основна сума>\"] зменшує відповідь. Самі проводки — get_register_records. "
+        "Якщо база відповідає, що MCBP_AI застарів — треба оновити конфігурацію.",
         _params(
-            {"type": {"type": "string", "description": "Ім'я регістру накопичення (з list_metadata)"},
+            {"type": {"type": "string",
+                      "description": "Ім'я регістру накопичення або бухгалтерії (з list_metadata)"},
              "filters": {"type": "object",
-                         "description": "{ім'я_виміру: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}"},
+                         "description": "{ім'я_виміру: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}. "
+                                        "Для регістру бухгалтерії — вимір або ExtDimension1..N "
+                                        "(ExtDimension — будь-яка позиція)"},
              "on": {"type": "string",
                     "description": "Дата, СТАНОМ НА яку рахувати залишок, YYYY-MM-DD. Без неї — "
                                    "поточний залишок. Це НЕ фільтр за виміром: сюди йде лише дата "
-                                   "(напр. «борг на 01.01.2026» → on=\"2026-01-01\")"}},
+                                   "(напр. «борг на 01.01.2026» → on=\"2026-01-01\")"},
+             "table": {"type": "string",
+                       "enum": ["balance", "turnovers", "balance_and_turnovers", "drcr_turnovers"],
+                       "description": "Лише регістр бухгалтерії: яку віртуальну таблицю читати"},
+             "from": {"type": "string",
+                      "description": "Лише регістр бухгалтерії, таблиці оборотів: початок періоду YYYY-MM-DD"},
+             "to": {"type": "string",
+                    "description": "Лише регістр бухгалтерії, таблиці оборотів: кінець періоду YYYY-MM-DD"},
+             "account": {"type": "array", "items": {"type": "string"},
+                         "description": "Коди рахунків (напр. 361) або UUID; субрахунки включено"},
+             "corr_account": {"type": "array", "items": {"type": "string"},
+                              "description": "Кор. рахунки — лише table=turnovers"},
+             "account_dr": {"type": "array", "items": {"type": "string"},
+                            "description": "Рахунки Дт — лише table=drcr_turnovers"},
+             "account_cr": {"type": "array", "items": {"type": "string"},
+                            "description": "Рахунки Кт — лише table=drcr_turnovers"},
+             "groupby": {"type": "array", "items": {"type": "string"}, "maxItems": 4,
+                         "description": "До 4: ExtDimension1..N, вимір регістру, CorrAccount, "
+                                        "Period:day|week|month|quarter|year (не для balance). "
+                                        "Рахунок — завжди група"},
+             "resources": {"type": "array", "items": {"type": "string"},
+                           "description": "Ресурси-суми (за замовчуванням усі числові)"},
+             "limit": {"type": "integer", "minimum": 1, "maximum": 1000,
+                       "description": "Рядків, 1..1000 (за замовчуванням 50); truncated=true — звузь запит"}},
             ["type"],
         ),
         _register_balance,
@@ -437,12 +496,23 @@ TOOLS: dict[str, ToolSpec] = {
             "describe_metadata (kind AccumulationRegisters) — don't guess (e.g. a dimension may "
             "be called Контрагент, not counterparty). Reference values (counterparty, "
             "organization, item) are passed as UUIDs from Ref.Data. Example: "
-            "{\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}."
+            "{\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}. "
+            "ACCOUNTING register (AccountingRegisters, the posting journal): balances/turnovers "
+            "per ACCOUNT. `table`: balance (balance at `on`), turnovers (turnovers over "
+            "from/to), balance_and_turnovers (opening/turnovers/closing — the trial balance), "
+            "drcr_turnovers (Dr→Cr correspondence turnovers); the last three need `from`, a "
+            "missing `to` means today. account=[\"361\"] includes subaccounts. By default one "
+            "line per account; groupby=[\"ExtDimension1\"] breaks it down by extdimension "
+            "(`ext_dimension_types` in the answer names what ExtDimensionN is for each account). "
+            "resources=[\"<main amount>\"] keeps the answer small. Postings themselves — "
+            "get_register_records. If the base answers that MCBP_AI is outdated, the "
+            "configuration must be updated."
         )),
     "list_metadata": ToolSpec(
         "list_metadata",
         "Структура конфігурації BAS. metadata='all' → перелік об'єктів усіх видів одразу; "
-        "metadata=Catalogs|Documents|InformationRegisters|AccumulationRegisters|Enums|Tasks|... → "
+        "metadata=Catalogs|Documents|InformationRegisters|AccumulationRegisters|"
+        "AccountingRegisters|ChartsOfAccounts|Enums|Tasks|... → "
         "список об'єктів цього виду (ім'я + синонім, БЕЗ реквізитів і БЕЗ значень). "
         "Працює для будь-якої конфігурації. Виклич, щоб дізнатися реальні імена типів, "
         "замість того щоб їх вгадувати.",
@@ -455,14 +525,16 @@ TOOLS: dict[str, ToolSpec] = {
         description_en=(
             "BAS configuration structure. metadata='all' → list of objects of every kind at "
             "once; metadata=Catalogs|Documents|InformationRegisters|AccumulationRegisters|"
-            "Enums|Tasks|... → list of objects of that kind (name + synonym, WITHOUT attributes "
+            "AccountingRegisters|ChartsOfAccounts|Enums|Tasks|... → list of objects of that kind (name + synonym, WITHOUT attributes "
             "and WITHOUT values). Works for any configuration. Call this to learn the real type "
             "names instead of guessing them."
         )),
     "describe_metadata": ToolSpec(
         "describe_metadata",
         "Детальний опис одного об'єкта метаданих у вигляді дерева: реквізити з типами "
-        "(для регістрів — виміри/ресурси/реквізити; для перелічень — значення). Це "
+        "(для регістрів — виміри/ресурси/реквізити; для перелічень — значення; для регістру "
+        "бухгалтерії ще chart_of_accounts, correspondence і query_fields — саме ці імена "
+        "(AccountDr, ExtDimensionCr1, <Вимір>Dr) йдуть у filters/groupby). Це "
         "СТРУКТУРА, БЕЗ жодних значень конкретного запису — наявність поля тут не означає, "
         "що воно заповнене чи порожнє в базі. Використовуй, щоб дізнатися ТОЧНІ імена полів "
         "(напр. чи є прапорець Pokupatel/Postavshchik) ПЕРЕД фільтрацією чи читанням даних. Не "
@@ -496,7 +568,10 @@ TOOLS: dict[str, ToolSpec] = {
         _describe_metadata,
         description_en=(
             "Detailed description of a single metadata object as a tree: attributes with types "
-            "(for registers — dimensions/resources/attributes; for enums — values). This is "
+            "(for registers — dimensions/resources/attributes; for enums — values; for an "
+            "accounting register also chart_of_accounts, correspondence and query_fields — "
+            "those names (AccountDr, ExtDimensionCr1, <Dimension>Dr) go into filters/groupby). "
+            "This is "
             "STRUCTURE, WITHOUT any specific record's values — a field being present here does "
             "not mean it is filled or empty in the base. Use it to learn the EXACT field names "
             "(e.g. whether there is a flag Pokupatel/Postavshchik) BEFORE filtering or reading "
@@ -774,11 +849,18 @@ TOOLS: dict[str, ToolSpec] = {
         "групує за періодом. Відповідь тоді — {\"aggregates\":[...]} замість {\"data\":[...]}; "
         "неактивні рухи не враховуються; у регістрі залишків групи розділені за RecordType "
         "(прихід/витрата окремо, `record_type_split: true`). Сирі рядки — лише щоб подивитись "
-        "окремі рухи.",
+        "окремі рухи. "
+        "Регістр БУХГАЛТЕРІЇ: рядки — проводки (AccountDr/AccountCr, ExtDimensionDr1.., суми); "
+        "`from` (або filters.Recorder) ОБОВ'ЯЗКОВИЙ; filters.AccountDr=\"361\" бере й субрахунки; "
+        "filters.Account / filters.ExtDimension — будь-яка сторона / будь-яка позиція. Підсумки "
+        "по рахунку — get_register_balance table=turnovers, а НЕ agg по проводках (agg групує "
+        "за точним рахунком, без згортання в рахунок-батько).",
         _params(
             {"type": {"type": "string",
-                      "description": "Ім'я регістру відомостей або накопичення (з list_metadata)"},
-             "from": {"type": "string", "description": "Початок періоду YYYY-MM-DD (необов'язково)"},
+                      "description": "Ім'я регістру відомостей, накопичення або бухгалтерії (з list_metadata)"},
+             "from": {"type": "string",
+                      "description": "Початок періоду YYYY-MM-DD (необов'язково; для регістру "
+                                     "бухгалтерії — обов'язково, або filters.Recorder)"},
              "to": {"type": "string", "description": "Кінець періоду YYYY-MM-DD (необов'язково)"},
              "filters": {"type": "object",
                          "description": "{ім'я_поля: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}"},
@@ -826,7 +908,12 @@ TOOLS: dict[str, ToolSpec] = {
             "period. The response is then {\"aggregates\":[...]} instead of {\"data\":[...]}; "
             "inactive movements are excluded; on a balance register the groups are split by "
             "RecordType (receipt/expense separately, `record_type_split: true`). Raw rows only to "
-            "inspect individual movements."
+            "inspect individual movements. "
+            "ACCOUNTING register: rows are postings (AccountDr/AccountCr, ExtDimensionDr1.., "
+            "amounts); `from` (or filters.Recorder) is REQUIRED; filters.AccountDr=\"361\" takes "
+            "subaccounts too; filters.Account / filters.ExtDimension match either side / any "
+            "position. Totals per account — get_register_balance table=turnovers, NOT agg over "
+            "postings (agg groups by the exact account, no roll-up to the parent account)."
         )),
     "set_function_status": ToolSpec(
         "set_function_status",

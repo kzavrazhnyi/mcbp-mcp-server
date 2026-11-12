@@ -191,3 +191,17 @@ def test_get_documents_description_does_not_claim_data_is_universal():
     desc = TOOLS["get_documents"].description
     assert "типовим" in desc or "типове" in desc
     assert "не гарантією" in desc or "не гарантія" in desc
+
+
+def test_register_balance_schema_has_accounting_arguments():
+    props = TOOLS["get_register_balance"].parameters["properties"]
+    assert props["table"]["enum"] == ["balance", "turnovers", "balance_and_turnovers",
+                                      "drcr_turnovers"]
+    for key in ("from", "to", "account", "corr_account", "account_dr", "account_cr",
+                "groupby", "resources", "limit"):
+        assert key in props, key
+    assert props["groupby"]["maxItems"] == 4
+    assert props["limit"]["maximum"] == 1000
+    assert TOOLS["get_register_balance"].parameters["required"] == ["type"]
+    TOOLS["get_register_balance"].validate_arguments(
+        {"type": "Хозрасчетный", "table": "balance", "account": ["361"]})

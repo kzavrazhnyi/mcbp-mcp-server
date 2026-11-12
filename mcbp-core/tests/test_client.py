@@ -1024,3 +1024,213 @@ async def test_get_object_mock_honours_selectors():
     assert result["tabular_section_counts"] == {"КонтактнаяИнформация": 3}
     assert result["data"]["tabular_sections"]["КонтактнаяИнформация"] == [
         {"Вид": "Телефон", "Представление": "<mock-2>"}]
+
+
+# --- Accounting registers on GET /registers/{type}/balance and /records ----------------
+
+_ACCOUNTING_ANSWER = {"metadata": "accountingregister", "type": "Хозрасчетный",
+                      "table": "balance_and_turnovers", "data": [], "truncated": False}
+
+
+@respx.mock
+async def test_register_balance_serialises_accounting_arguments():
+    route = respx.get(url__startswith="http://test/ai/v1/registers/").mock(
+        return_value=httpx.Response(200, json=_ACCOUNTING_ANSWER)
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.register_balance(
+            "Хозрасчетный", {"Организация": "org-1"}, table="balance_and_turnovers",
+            date_from="2026-01-01", date_to="2026-03-31", account=["361", "631"],
+            groupby=["ExtDimension1", "Period:month"], resources=["Сумма"], limit=20)
+        params = route.calls[0].request.url.params
+        assert params["table"] == "balance_and_turnovers"
+        assert params["from"] == "2026-01-01"
+        assert params["to"] == "2026-03-31"
+        assert params["account"] == "361,631"
+        assert params["groupby"] == "ExtDimension1,Period:month"
+        assert params["resources"] == "Сумма"
+        assert params["limit"] == "20"
+        assert params["Организация"] == "org-1"  # dimension filters stay bare
+        assert "on" not in params
+        assert result["table"] == "balance_and_turnovers"
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_register_balance_without_accounting_args_sends_no_reserved_params():
+    route = respx.get(url__startswith="http://test/ai/v1/registers/MCBP_Debt/balance").mock(
+        return_value=httpx.Response(200, json={"type": "MCBP_Debt", "data": []})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.register_balance("MCBP_Debt", {"Контрагент": "uuid-1"})
+        assert dict(route.calls[0].request.url.params) == {"Контрагент": "uuid-1"}
+        assert result == {"type": "MCBP_Debt", "data": []}  # no guard on accumulation answers
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.parametrize("kwargs, needle", [
+    ({"table": "balance", "corr_account": ["701"]}, "corr_account"),
+    ({"corr_account": "701"}, "corr_account"),
+    ({"table": "turnovers", "account_dr": ["361"]}, "account_dr"),
+    ({"table": "drcr_turnovers", "account": ["361"]}, "account_dr / account_cr"),
+])
+async def test_register_balance_client_side_errors_before_http(kwargs, needle):
+    client = _live_client()
+    await client.startup()
+    try:
+        with respx.mock(assert_all_called=False) as mock:
+            route = mock.get(url__startswith="http://test/ai/v1/registers/")
+            with pytest.raises(ParameterError) as exc_info:
+                await client.register_balance("Хозрасчетный", {}, **kwargs)
+            assert not route.called
+        assert needle in str(exc_info.value)
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_register_balance_old_service_answer_without_table_raises():
+    # An MCBP_AI that predates accounting balances reads table=/account= as dimensions; a 200
+    # without the `table` key must never pass for an accounting answer.
+    respx.get(url__startswith="http://test/ai/v1/registers/").mock(
+        return_value=httpx.Response(200, json={"type": "Хозрасчетный", "data": []})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(ParameterError) as exc_info:
+            await client.register_balance("Хозрасчетный", {}, table="balance", account="361")
+        assert "predates accounting balances" in str(exc_info.value)
+    finally:
+        await client.shutdown()
+
+
+async def test_mock_accounting_balance_shapes():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    balance = await client.register_balance("Хозрасчетный", {}, on="2026-04-01",
+                                            table="balance", account=["361"])
+    assert balance["metadata"] == "accountingregister"
+    assert balance["table"] == "balance"
+    row = balance["data"][0]
+    assert row["Account"]["Code"] == "361"
+    assert {"СуммаBalanceDr", "СуммаBalanceCr"} <= row.keys()
+    assert balance["ext_dimension_types"] == {"361": ["Контрагенты", "Договоры"]}
+
+    osv = await client.register_balance("Хозрасчетный", {}, table="balance_and_turnovers",
+                                        date_from="2026-01-01", groupby=["ExtDimension1"])
+    row = osv["data"][0]
+    assert osv["groupby"] == ["Account", "ExtDimension1"]
+    assert row["ExtDimension1"]["Metadata"] == "Контрагенты"
+    assert {"СуммаOpeningBalanceDr", "СуммаTurnoverCr", "СуммаClosingBalanceDr"} <= row.keys()
+
+    drcr = await client.register_balance("Хозрасчетный", {}, table="drcr_turnovers",
+                                         date_from="2026-01-01", account_dr=["361"])
+    assert drcr["data"][0]["AccountCr"]["Code"] == "701"
+    assert "СуммаTurnover" in drcr["data"][0]
+
+    with pytest.raises(ParameterError):
+        await client.register_balance("Хозрасчетный", {}, table="turnovers")  # no from
+
+
+async def test_mock_accounting_records_need_from_or_recorder():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    with pytest.raises(ParameterError) as exc_info:
+        await client.register_records("Хозрасчетный")
+    assert "from" in str(exc_info.value)
+    result = await client.register_records("Хозрасчетный", date_from="2026-08-01")
+    assert result["metadata"] == "accountingregister"
+    row = result["data"][0]
+    assert row["AccountDr"]["Code"] == "361" and row["AccountCr"]["Code"] == "701"
+    assert row["ExtDimensionDr1"]["Metadata"] == "Контрагенты"
+    by_recorder = await client.register_records("Хозрасчетный",
+                                                filters={"Recorder": "doc-0101"})
+    assert by_recorder["data"]
+    totals = await client.register_records("Хозрасчетный", date_from="2026-08-01",
+                                           agg=["sum:*"], groupby=["AccountDr"])
+    assert totals["metadata"] == "accountingregister"
+
+
+async def test_mock_describe_accounting_register_carries_query_fields():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    detail = await client.describe_metadata("AccountingRegisters", "Хозрасчетный")
+    assert detail["metadata"] == "accountingregister"
+    assert detail["correspondence"] is True
+    assert detail["chart_of_accounts"]["max_ext_dimension_count"] == 3
+    assert "AccountDr" in detail["query_fields"]
+    assert any(r["name"] == "ВалютнаяСумма" and r["balance"] is False
+               for r in detail["resources"])
+
+
+@respx.mock
+async def test_register_balance_lone_table_balance_passes_for_accumulation_register():
+    # table="balance" is what an accumulation register computes anyway: its answer has no
+    # `table` key, and that must not trip the old-service guard.
+    route = respx.get(url__startswith="http://test/ai/v1/registers/").mock(
+        return_value=httpx.Response(200, json={"type": "ТоварыНаСкладах", "data": []})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.register_balance("ТоварыНаСкладах", {"Склад": "s-1"},
+                                               table="balance")
+        assert route.calls[0].request.url.params["table"] == "balance"
+        assert result == {"type": "ТоварыНаСкладах", "data": []}
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_register_balance_not_found_with_accounting_args_hints_at_update():
+    # An MCBP_AI that predates accounting support looks only at accumulation registers and
+    # answers 404 for an accounting one — the guard never sees a 200, so the 404 carries the hint.
+    respx.get(url__startswith="http://test/ai/v1/registers/").mock(
+        return_value=httpx.Response(404, json={"error": {
+            "code": "NOT_FOUND", "message": "register Хозрасчетный not found"}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(NotFoundError) as exc_info:
+            await client.register_balance("Хозрасчетный", {}, table="turnovers",
+                                          date_from="2026-01-01")
+        message = str(exc_info.value)
+        assert "register Хозрасчетный not found" in message
+        assert "update the MCBP_AI module" in message
+        assert exc_info.value.code == "NOT_FOUND"
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_register_balance_not_found_without_accounting_args_is_unchanged():
+    respx.get(url__startswith="http://test/ai/v1/registers/").mock(
+        return_value=httpx.Response(404, json={"error": {
+            "code": "NOT_FOUND", "message": "register Нема not found"}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(NotFoundError) as exc_info:
+            await client.register_balance("Нема", {})
+        assert "MCBP_AI" not in str(exc_info.value)
+    finally:
+        await client.shutdown()
+
+
+async def test_mock_accumulation_balance_accepts_lone_table_balance_only():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    result = await client.register_balance("ТоварыНаСкладах", {}, table="balance")
+    assert result["type"] == "ТоварыНаСкладах"
+    with pytest.raises(ParameterError) as exc_info:
+        await client.register_balance("ТоварыНаСкладах", {}, table="balance", limit=50)
+    assert "accounting registers only" in str(exc_info.value)

@@ -893,3 +893,160 @@ def test_record_type_split_still_masks_reference_valued_record_type_key():
     rows = masker.mask(payload)["aggregates"]
     assert rows[0]["ВидДвижения"]["Presentation"] != "Альфа Трейд, ТОВ"
     assert rows[1]["ВидДвижения"] == "Приход"
+
+
+# --- Accounting registers -------------------------------------------------------------
+
+def _accounting_classifier(name: str) -> str | None:
+    return {
+        "Хозрасчетный": "ПланСчетов.Хозрасчетный",
+        "Контрагенты": "Справочник.Контрагенты",
+        "Номенклатура": "Справочник.Номенклатура",
+        "РеализацияТоваровУслуг": "Документ.РеализацияТоваровУслуг",
+    }.get(name)
+
+
+def _account(code: str, description: str) -> dict:
+    return {"Presentation": code, "Data": f"acc-{code}", "Metadata": "Хозрасчетный",
+            "Code": code, "Description": description}
+
+
+def test_account_ref_with_code_and_description_stays_open():
+    masker = Masker(type_classifier=_accounting_classifier)
+    account = _account("361", "Розрахунки з вітчизняними покупцями")
+    result = masker.mask({"metadata": "accountingregister", "type": "Хозрасчетный",
+                          "data": [{"AccountDr": account, "Сумма": 100.0}]})
+    assert result["data"][0]["AccountDr"] == account
+
+
+def test_extdimension_values_classified_by_their_own_type():
+    masker = Masker(type_classifier=_accounting_classifier)
+    payload = {"metadata": "accountingregister", "type": "Хозрасчетный", "data": [{
+        "ExtDimensionDr1": _ref("Контрагенты", "cp-1", "Альфа Трейд, ТОВ"),
+        "ExtDimensionDr2": _ref("Номенклатура", "item-1", "Кабель 3x2.5"),
+        "ExtDimensionCr1": _ref("РеализацияТоваровУслуг", "doc-1", "РН-00001 від 01.08.2026"),
+    }]}
+    row = masker.mask(payload)["data"][0]
+    assert row["ExtDimensionDr1"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert row["ExtDimensionDr2"]["Presentation"] == "Кабель 3x2.5"
+    assert row["ExtDimensionCr1"]["Presentation"] == "РН-00001 від 01.08.2026"
+
+
+def test_masked_ref_does_not_leak_code_and_description():
+    # Unknown chart (classifier miss) -> masked conservatively; Code/Description go with it.
+    masker = Masker(type_classifier=lambda name: None)
+    ref = _account("361", "Розрахунки з вітчизняними покупцями")
+    out = masker.mask({"data": [{"Account": ref}], "cursor": None})["data"][0]["Account"]
+    assert out["Presentation"] != "361"
+    assert out["Description"] == out["Presentation"]
+    assert out["Code"] != "361"
+
+
+async def test_chart_and_register_sharing_a_name_keep_the_account_open():
+    # Registers come BEFORE the chart in the payload on purpose: precedence, not dict order,
+    # decides which kind owns the bare name.
+    client = _FakeClient({"all": {
+        "accountingregisters": [{"name": "Хозрасчетный"}],
+        "accumulationregisters": [{"name": "Контрагенты"}],
+        "catalogs": [{"name": "Контрагенты"}],
+        "chartsofaccounts": [{"name": "Хозрасчетный"}],
+    }})
+    classify = await build_type_classifier(client)
+    assert classify("Хозрасчетный") == "ПланСчетов.Хозрасчетный"
+    assert classify("Контрагенты") == "Справочник.Контрагенты"
+    masker = Masker(type_classifier=classify)
+    account = _account("361", "Розрахунки з вітчизняними покупцями")
+    assert masker.mask({"data": [{"Account": account}], "cursor": None})["data"][0][
+        "Account"] == account
+
+
+async def test_accounting_register_kind_is_classified_when_alone():
+    client = _FakeClient({"all": {"accountingregisters": [{"name": "Журнал"}],
+                                  "chartsofaccounts": []}})
+    classify = await build_type_classifier(client)
+    assert classify("Журнал") == "РегистрБухгалтерии.Журнал"
+
+
+def test_accounting_balance_envelope_structural_keys_untouched():
+    masker = Masker(type_classifier=_accounting_classifier)
+    payload = {
+        "metadata": "accountingregister", "type": "Хозрасчетный",
+        "table": "balance_and_turnovers", "from": "2026-01-01", "to": "2026-03-31",
+        "on": None, "periodicity": "month", "groupby": ["Account", "ExtDimension1"],
+        "resources": ["Сумма"],
+        "data": [{"Account": _account("361", "Розрахунки з покупцями"),
+                  "ExtDimension1": _ref("Контрагенты", "cp-1", "Альфа Трейд, ТОВ"),
+                  "Period": "2026-01-01",
+                  "СуммаOpeningBalanceDr": 0, "СуммаClosingBalanceDr": 800.0}],
+        "ext_dimension_types": {"361": ["Контрагенты", "Договоры"]},
+        "truncated": False,
+    }
+    result = masker.mask(payload)
+    for key in ("metadata", "type", "table", "from", "to", "on", "periodicity", "groupby",
+                "resources", "ext_dimension_types", "truncated"):
+        assert result[key] == payload[key], key
+    row = result["data"][0]
+    assert row["Account"]["Code"] == "361"
+    assert row["ExtDimension1"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert row["СуммаClosingBalanceDr"] == 800.0
+
+
+def test_accumulation_balance_on_key_still_untouched():
+    masker = Masker(type_classifier=_classifier)
+    payload = {"type": "ДенежныеСредства", "on": "2026-01-01",
+               "data": [{"Валюта": _ref("Валюты", "cur-1", "грн."), "СуммаОстаток": 5}]}
+    result = masker.mask(payload)
+    assert result["on"] == "2026-01-01"
+    assert result["type"] == "ДенежныеСредства"
+
+
+def test_accounting_aggregate_rows_by_account_and_extdimension():
+    masker = Masker(type_classifier=_accounting_classifier)
+    payload = {"metadata": "accountingregister", "type": "Хозрасчетный",
+               "groupby": ["AccountDr", "ExtDimensionCr1"], "truncated": False,
+               "aggregates": [{"AccountDr": _account("361", "Розрахунки з покупцями"),
+                               "ExtDimensionCr1": _ref("Контрагенты", "cp-1", "Альфа Трейд, ТОВ"),
+                               "sum_Сумма": 1200.0, "count": 2}]}
+    row = masker.mask(payload)["aggregates"][0]
+    assert row["AccountDr"]["Code"] == "361"
+    assert row["ExtDimensionCr1"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert row["sum_Сумма"] == 1200.0 and row["count"] == 2
+
+
+def test_extdimension_pseudonym_unmasks_to_a_bare_uuid():
+    masker = Masker(type_classifier=_accounting_classifier)
+    uuid = "6f1c2a3b-0000-4000-8000-000000000001"
+    masked = masker.mask({"metadata": "accountingregister", "type": "Хозрасчетный",
+                          "data": [{"ExtDimensionDr1": _ref("Контрагенты", uuid, "Альфа")}]})
+    pseudo = masked["data"][0]["ExtDimensionDr1"]["Presentation"]
+    args = masker.unmask_arguments({"type": "Хозрасчетный",
+                                    "filters": {"ExtDimension": pseudo}})
+    assert args["filters"]["ExtDimension"] == uuid
+
+
+def test_accounting_balance_period_bucket_stays_open():
+    masker = Masker(type_classifier=_accounting_classifier)
+    payload = {"metadata": "accountingregister", "type": "Хозрасчетный", "table": "turnovers",
+               "from": "2026-01-01", "to": "2026-03-31", "periodicity": "month",
+               "groupby": ["Account", "Period:month"], "resources": ["Сумма"],
+               "data": [{"Account": _account("361", "Розрахунки з покупцями"),
+                         "Period": "2026-02-01", "СуммаTurnoverDr": 400.0}],
+               "ext_dimension_types": {}, "truncated": False}
+    row = masker.mask(payload)["data"][0]
+    assert row["Period"] == "2026-02-01"
+    assert row["Account"]["Code"] == "361"
+    assert row["СуммаTurnoverDr"] == 400.0
+
+
+def test_accounting_period_bucket_open_while_extdimension_still_masked():
+    # The Period:<p> group opens only the Period key; the rest of the row is masked as usual.
+    masker = Masker(type_classifier=_accounting_classifier)
+    payload = {"metadata": "accountingregister", "type": "Хозрасчетный", "table": "turnovers",
+               "groupby": ["Account", "Period:month"],
+               "data": [{"Account": _account("361", "Розрахунки з покупцями"),
+                         "Period": "2026-02-01",
+                         "ExtDimension1": _ref("Контрагенты", "cp-1", "Альфа Трейд, ТОВ")}],
+               "truncated": False}
+    row = masker.mask(payload)["data"][0]
+    assert row["Period"] == "2026-02-01"
+    assert row["ExtDimension1"]["Presentation"] != "Альфа Трейд, ТОВ"

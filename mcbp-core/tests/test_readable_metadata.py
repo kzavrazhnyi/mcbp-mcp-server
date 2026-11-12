@@ -158,3 +158,29 @@ async def test_failed_rights_load_leaves_the_list_unfiltered_and_is_not_retried(
         finally:
             await client.shutdown()
     assert readable.call_count == 1
+
+
+def test_accounting_kinds_map_to_their_all_keys():
+    from mcbp_core.client import _KIND_TO_ALL_KEY
+
+    assert _KIND_TO_ALL_KEY["accountingregister"] == "accountingregisters"
+    assert _KIND_TO_ALL_KEY["chartofaccounts"] == "chartsofaccounts"
+
+
+async def test_readable_view_filters_accounting_registers():
+    readable = {"accountingregisters": [{"name": "Хозрасчетный"}]}
+    kind_list = {"metadata": "accountingregister", "count": 2,
+                 "items": [{"name": "Хозрасчетный"}, {"name": "Управленческий"}]}
+    with respx.mock(assert_all_called=False) as mock:
+        mock.get(f"{BASE}/ai/v1/metadata/all", params={"access": "read"}).mock(
+            return_value=httpx.Response(200, json=readable))
+        mock.get(f"{BASE}/ai/v1/metadata/AccountingRegisters").mock(
+            return_value=httpx.Response(200, json=kind_list))
+        client = _client()
+        await client.startup()
+        try:
+            result = await client.list_readable_metadata("AccountingRegisters")
+        finally:
+            await client.shutdown()
+    assert result["items"] == [{"name": "Хозрасчетный"}]
+    assert result["count"] == 1

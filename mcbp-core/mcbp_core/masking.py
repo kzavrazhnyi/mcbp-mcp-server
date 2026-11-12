@@ -124,6 +124,7 @@ _KIND_DOTTED_PREFIX: dict[str, str] = {
     "constant": "Константа.",
     "informationregister": "РегистрСведений.",
     "accumulationregister": "РегистрНакопления.",
+    "accountingregister": "РегистрБухгалтерии.",
 }
 
 # `list_metadata("all")` top-level keys (plural) -> dotted-type prefix. Used by
@@ -133,6 +134,7 @@ _INVENTORY_KIND_PREFIX: dict[str, str] = {
     "documents": "Документ.",
     "informationregisters": "РегистрСведений.",
     "accumulationregisters": "РегистрНакопления.",
+    "accountingregisters": "РегистрБухгалтерии.",
     "enums": "Перечисление.",
     "tasks": "Задача.",
     "chartsofcharacteristictypes": "ПланВидовХарактеристик.",
@@ -145,7 +147,7 @@ _INVENTORY_KIND_PREFIX: dict[str, str] = {
 # Same keys as `_INVENTORY_KIND_PREFIX`, spelled the way `GET /ai/v1/metadata/{kind}`
 # expects for a SINGLE kind (per `.claude/refs/onec-tool-contract.md` §4.8). These are
 # generic platform metadata-KIND names ("catalog", "chart of accounts", ...), the same
-# 11 kinds on every BAS/1C configuration — not a configuration's own object names — so
+# 12 kinds on every BAS/1C configuration — not a configuration's own object names — so
 # listing them here does not violate onec-universality. Some BAS service builds omit one
 # or more of these kinds from the `all` inventory (observed: chartsofaccounts absent from
 # `metadata/all` while `metadata/ChartsOfAccounts` answers fine); `build_type_classifier`
@@ -155,6 +157,7 @@ _INVENTORY_KIND_ROUTE_NAME: dict[str, str] = {
     "documents": "Documents",
     "informationregisters": "InformationRegisters",
     "accumulationregisters": "AccumulationRegisters",
+    "accountingregisters": "AccountingRegisters",
     "enums": "Enums",
     "tasks": "Tasks",
     "chartsofcharacteristictypes": "ChartsOfCharacteristicTypes",
@@ -256,8 +259,13 @@ _CHANGE_ENTRY_KEYS = frozenset({"field", "old", "new"})
 # business data — the model's self-correction depends on reading these as-is (see
 # ai_orchestrator.SYSTEM_PROMPT: `unknown_fields`/`available_names` steer it to a real field
 # name). Values inside `data`/`aggregates` rows are unaffected and stay masked as before.
+# The accounting balance envelope (get_register_balance on an AccountingRegister) adds its echo
+# of the request (`table`, `periodicity`, `from`/`to`/`on`, `groupby`, `resources`) and the
+# `ext_dimension_types` legend: account codes -> extdimension type names, structure too.
 _ENVELOPE_STRUCTURAL_KEYS = frozenset(
-    {"unknown_fields", "available_names", "cursor", "truncated", "metadata", "type"}
+    {"unknown_fields", "available_names", "cursor", "truncated", "metadata", "type",
+     "table", "periodicity", "from", "to", "on", "groupby", "resources",
+     "ext_dimension_types"}
 )
 _CODE_LIKE_RE = re.compile(r"^\d+$")
 _UUID_RE = re.compile(
@@ -321,6 +329,17 @@ def _looks_like_change_entry(value: dict[str, Any]) -> bool:
 
 _BALANCE_ENVELOPE_KEYS = frozenset({"type", "data"})
 _BALANCE_ENVELOPE_OPTIONAL_KEYS = frozenset({"on", "cursor", "truncated"})
+
+
+def _period_bucket_keys(groupby: Any) -> set[str]:
+    """Row keys of `Period:<granularity>` groups in a `groupby` list (e.g. {"Period"}).
+
+    Such a bucket is a calendar date, not data about anyone — left open, or a by-month breakdown
+    would come back as unreadable pseudonyms. Shared by the register aggregate envelope and the
+    accounting balance envelope (whose rows carry the bucket under its own field name)."""
+    if not isinstance(groupby, list):
+        return set()
+    return {str(item).split(":", 1)[0] for item in groupby if ":" in str(item)}
 
 
 def _looks_like_envelope(value: dict[str, Any]) -> bool:
@@ -548,14 +567,26 @@ class Masker:
         new_context = self._dotted_type(value.get("type"), value.get("metadata"))
         context = new_context or fallback
         out: dict[str, Any] = {}
+        open_keys = _period_bucket_keys(value.get("groupby"))
         for k, v in value.items():
-            if k == "data":
+            if k == "data" and open_keys and isinstance(v, list) and all(
+                isinstance(row, dict) for row in v
+            ):
+                out[k] = [self._mask_row_keeping_open(row, context, open_keys) for row in v]
+            elif k == "data":
                 out[k] = self._mask_data(v, context)
             elif k in _ENVELOPE_STRUCTURAL_KEYS:
                 out[k] = v
             else:
                 out[k] = self._walk_value(k, v, fallback)
         return out
+
+    def _mask_row_keeping_open(
+        self, row: dict[str, Any], context: str | None, open_keys: set[str]
+    ) -> dict[str, Any]:
+        rest = {k: v for k, v in row.items() if k not in open_keys}
+        masked = self._walk_value(None, rest, self._row_context(row, context)) if rest else {}
+        return {k: row[k] if k in open_keys else masked[k] for k in row}
 
     def _mask_data(self, data: Any, context: str | None) -> Any:
         if isinstance(data, list):
@@ -591,8 +622,7 @@ class Masker:
     ) -> dict[str, Any]:
         groupby_field = value.get("groupby")
         # Register aggregates: `groupby` is a list and each group value sits under its own field
-        # name. A `Period:<granularity>` bucket is a calendar date, not data about anyone - left
-        # open, or a by-month breakdown would come back as unreadable pseudonyms.
+        # name. A `Period:<granularity>` bucket stays open (see _period_bucket_keys).
         # RecordType (receipt/expense) is a platform enum, not PII: masked, the split rows would be
         # indistinguishable. Open ONLY when BSL marked the split (`record_type_split: true`, set
         # for balance accumulation registers alone) - an information register may have its own
@@ -600,8 +630,7 @@ class Masker:
         open_keys: set[str] = set()
         record_type_open = False
         if isinstance(groupby_field, list):
-            open_keys = {str(item).split(":", 1)[0] for item in groupby_field
-                         if ":" in str(item)}
+            open_keys = _period_bucket_keys(groupby_field)
             record_type_open = value.get("record_type_split") is True
             groupby_field = None
         context = self._dotted_type(value.get("type"), value.get("metadata")) or context
@@ -732,6 +761,12 @@ class Masker:
 
         out = dict(ref)
         out["Presentation"] = pseudo
+        # An account ref carries Code/Description beside its Presentation; a ref that is masked
+        # must not leak the same text through them (open account refs never get here).
+        if isinstance(out.get("Description"), str) and out["Description"].strip():
+            out["Description"] = pseudo
+        if isinstance(out.get("Code"), str) and out["Code"].strip():
+            out["Code"] = self._pseudonym_for_field("Code", out["Code"])
         return out
 
     def _mask_value_reference(self, ref: dict[str, Any]) -> dict[str, Any]:
@@ -843,10 +878,22 @@ class StreamRehydrator:
 # --- Optional async helper: build a TypeClassifier from a live MCBPClient ---------
 
 def _merge_inventory_items(mapping: dict[str, str], prefix: str, items: Any) -> None:
+    # Never overwrite: the first kind to claim a bare name keeps it (see _INVENTORY_MERGE_ORDER).
     for item in items or ():
         name = item.get("name") if isinstance(item, dict) else None
-        if name:
+        if name and name not in mapping:
             mapping[name] = f"{prefix}{name}"
+
+
+# The classifier maps BARE names, and a register often shares its name with a reference type —
+# a chart of accounts and its accounting register both called e.g. Хозрасчетный. A reference
+# `Metadata` is what row values carry, so reference-bearing kinds claim a name first and
+# registers/constants (never a row value's `Metadata`) only take what is left. Without this an
+# account ref would classify as a register and come out masked.
+_INVENTORY_MERGE_ORDER: tuple[str, ...] = tuple(
+    sorted(_INVENTORY_KIND_PREFIX,
+           key=lambda key: key.endswith("registers") or key == "constants")
+)
 
 
 async def build_type_classifier(client: MCBPClient) -> TypeClassifier:
@@ -866,14 +913,15 @@ async def build_type_classifier(client: MCBPClient) -> TypeClassifier:
     configuration. This is a one-time startup cost, run concurrently."""
     payload = await client.list_metadata("all")
     mapping: dict[str, str] = {}
+    items_by_key: dict[str, Any] = {}
     missing_keys: list[str] = list(_INVENTORY_KIND_PREFIX)
     if isinstance(payload, dict):
         missing_keys = []
-        for inventory_key, prefix in _INVENTORY_KIND_PREFIX.items():
+        for inventory_key in _INVENTORY_KIND_PREFIX:
             if inventory_key not in payload:
                 missing_keys.append(inventory_key)
                 continue
-            _merge_inventory_items(mapping, prefix, payload.get(inventory_key))
+            items_by_key[inventory_key] = payload.get(inventory_key)
 
     if missing_keys:
 
@@ -895,7 +943,12 @@ async def build_type_classifier(client: MCBPClient) -> TypeClassifier:
                 )
                 continue
             items = result.get("items") if isinstance(result, dict) else None
-            _merge_inventory_items(mapping, _INVENTORY_KIND_PREFIX[inventory_key], items)
+            items_by_key[inventory_key] = items
+
+    for inventory_key in _INVENTORY_MERGE_ORDER:
+        if inventory_key in items_by_key:
+            _merge_inventory_items(mapping, _INVENTORY_KIND_PREFIX[inventory_key],
+                                   items_by_key[inventory_key])
 
     def classify(name: str) -> str | None:
         return mapping.get(name)
