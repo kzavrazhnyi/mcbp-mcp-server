@@ -53,8 +53,10 @@ class RecordingClient:
         return self._record("describe_metadata", kind=kind, type_=type_,
                              tabular_section=tabular_section, q=q)
 
-    async def get_object(self, kind, type_, object_id):
-        return self._record("get_object", kind=kind, type_=type_, object_id=object_id)
+    async def get_object(self, kind, type_, object_id, fields=None, sections=None, rows=None,
+                         offset=None):
+        return self._record("get_object", kind=kind, type_=type_, object_id=object_id,
+                             fields=fields, sections=sections, rows=rows, offset=offset)
 
     async def health(self):
         return self._record("health")
@@ -74,10 +76,10 @@ class RecordingClient:
         return self._record("set_register_record", type_=type_, fields=fields)
 
     async def register_records(self, type_, date_from=None, date_to=None, filters=None,
-                                orderby=None, desc=False, limit=None):
+                                orderby=None, desc=False, limit=None, agg=None, groupby=None):
         return self._record("register_records", type_=type_, date_from=date_from,
                              date_to=date_to, filters=filters, orderby=orderby, desc=desc,
-                             limit=limit)
+                             limit=limit, agg=agg, groupby=groupby)
 
 
 @pytest.fixture
@@ -186,7 +188,8 @@ async def test_get_object_maps_id_to_object_id(client):
     )
     method, kw = client.calls[0]
     assert method == "get_object"
-    assert kw == {"kind": "Catalogs", "type_": "Контрагенты", "object_id": "uuid-1"}
+    assert kw == {"kind": "Catalogs", "type_": "Контрагенты", "object_id": "uuid-1",
+                  "fields": None, "sections": None, "rows": 200, "offset": None}
 
 
 async def test_health_takes_no_arguments(client):
@@ -265,3 +268,32 @@ async def test_register_records_desc_coerced_to_bool(client):
     _, kw = client.calls[0]
     assert kw["desc"] is True
     assert isinstance(kw["desc"], bool)
+
+
+async def test_get_object_passes_selectors(client):
+    await TOOLS["get_object"].executor(
+        client, {"metadata": "Documents", "type": "Бюджет", "id": "uuid-1",
+                 "fields": ["Сценарий"], "tabular_sections": [], "rows_limit": 50, "offset": 50}
+    )
+    _, kw = client.calls[0]
+    assert kw["fields"] == ["Сценарий"]
+    assert kw["sections"] == []
+    assert kw["rows"] == 50
+    assert kw["offset"] == 50
+
+
+async def test_register_records_passes_agg_and_groupby(client):
+    await TOOLS["get_register_records"].executor(
+        client, {"type": "Бюджеты", "agg": ["sum:*", "count"],
+                 "groupby": ["Статья", "Period:month"]}
+    )
+    _, kw = client.calls[0]
+    assert kw["agg"] == ["sum:*", "count"]
+    assert kw["groupby"] == ["Статья", "Period:month"]
+
+
+async def test_register_records_agg_defaults_none(client):
+    await TOOLS["get_register_records"].executor(client, {"type": "X"})
+    _, kw = client.calls[0]
+    assert kw["agg"] is None
+    assert kw["groupby"] is None

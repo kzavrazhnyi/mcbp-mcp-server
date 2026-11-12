@@ -8,7 +8,7 @@ import hashlib
 from mcbp_core.tools import TOOLS, tool_specs
 
 # Snapshot of the Ukrainian `description` values as of the commit that introduced
-# `description_en` (search_catalog/filter_catalog hashes updated in 0.1.9 for the count rule; patch_object for tabular sections, create mode and DeletionMark; write_object for the nested reference form) — guards against an accidental reword invalidating the Anthropic prompt cache.
+# `description_en` (search_catalog/filter_catalog hashes updated in 0.1.9 for the count rule; patch_object for tabular sections, create mode and DeletionMark; write_object for the nested reference form; get_object/get_register_records in 0.1.30 for selectors and register aggregation) — guards against an accidental reword invalidating the Anthropic prompt cache.
 _UA_DESCRIPTION_SHA256 = {
     "search_catalog": "e2e26634ff896912cf967cacf41ec79bd773ef38a01cae48050962b125dd6fae",
     "get_documents": "c5d67095d419fca314c4a938144a01b2663d3a5d9880dfe3ed39f01aa8a43950",
@@ -17,12 +17,12 @@ _UA_DESCRIPTION_SHA256 = {
     "list_metadata": "c2e653bb50f82be685233312443eb1ececb3d9212651e07ae6abcde91c7d01e6",
     "describe_metadata": "2fc553a566d0891a078fa88e6c31c390f3845c2e3d2f965c548b5d8596aee5aa",
     "filter_catalog": "b4cd2b0fe4b7e05fbfa7957646debfc70d3568615f8d4da0e3f15a90d2d5d1a0",
-    "get_object": "f00ce22527682f57f50f8a6ac352b92d6350c126008e9165541ce4fcee3390fe",
+    "get_object": "002fd7c017a074c61167f8f94378c852ee0aee6176e9d52d533ed3906c34373d",
     "health": "2b472b33a1af9c2bbfbe89bbb2434dd9a85ad05c91208a7e24d856e8edc9f365",
     "write_object": "af53d4d8b7f051cb853d3e311cfbdb8a62e4418b2111a533ff51cba665c78ff4",
     "save_context": "3a87ceeb0b5daa3077c67d66ee5f3be38bb4241df2ec06c7c70bc00712d970ff",
     "patch_object": "d6b341cfb0fc2ab4f65aa37e26fb063279122ab2a932cda410583a8ad6d8e46a",
-    "get_register_records": "f387cbc16f077b5656fb06ca919cb4a4a5de3e4cbdefcbaf0aaa736d2c8b0795",
+    "get_register_records": "45b2a6700dcdc3c7d8e41299b468b317a6cdbf17a017ac4809d631b5bf0f3b5c",
 }
 
 
@@ -56,3 +56,12 @@ def test_tool_counts_unchanged():
     assert len(TOOLS) == 28
     assert len(tool_specs(surface="mcp")) == 15
     assert len(tool_specs(surface="mcp", include_write=True)) == 28
+
+
+def test_aggregation_rule_in_register_records_descriptions():
+    for text in (TOOLS["get_register_records"].description,
+                 TOOLS["get_register_records"].description_en):
+        assert "agg" in text and "groupby" in text and "sum:*" in text and "Period:month" in text
+    for text in (TOOLS["get_object"].description, TOOLS["get_object"].description_en):
+        assert "tabular_sections" in text and "rows_limit" in text
+        assert "tabular_section_counts" in text and "offset" in text

@@ -638,12 +638,22 @@ class MCBPClient:
     async def register_records(self, type_: str, date_from: str | None = None,
                                date_to: str | None = None, filters: dict | None = None,
                                orderby: str | None = None, desc: bool = False,
-                               limit: int | None = None) -> dict:
+                               limit: int | None = None, agg: list[str] | str | None = None,
+                               groupby: list[str] | str | None = None) -> dict:
         """Raw rows of an information register (no Ref — this is the ONLY route that can read
         them) or, for an accumulation register, raw movements (unlike `register_balance`'s
         computed balance). `date_from`/`date_to` are BOTH optional — an open bound when
         omitted. No cursor pagination exists (no Ref, no stable key); `truncated: true` in the
-        response means narrow the filter, not "fetch the next page"."""
+        response means narrow the filter, not "fetch the next page".
+
+        `agg` (["sum:*", "count"], ["sum:<Resource>"]) makes 1C aggregate instead of returning
+        rows: {"groupby": [...] | None, "aggregates": [{<group field>: value, "sum_<F>": n}],
+        "truncated"}. `groupby` — up to 4 fields, `Period:day|week|month|quarter|year` buckets
+        the period; it needs `agg`. A base whose MCBP_AI predates register aggregation ignores
+        both and answers raw rows — that is raised as ParameterError rather than handed back,
+        so nobody mistakes a page of rows for totals."""
+        if groupby and not agg:
+            raise ParameterError("groupby needs agg - e.g. agg=[\"sum:*\", \"count\"]")
         params: dict[str, Any] = {}
         if limit is not None:
             params["limit"] = limit
@@ -657,7 +667,17 @@ class MCBPClient:
             params["orderby"] = orderby
         if desc:
             params["desc"] = "true"
-        return await self._request("GET", f"/ai/v1/registers/{type_}/records", params=params)
+        if agg:
+            params["agg"] = _csv(agg)
+        if groupby:
+            params["groupby"] = _csv(groupby)
+        result = await self._request("GET", f"/ai/v1/registers/{type_}/records", params=params)
+        if agg and isinstance(result, dict) and "aggregates" not in result and "data" in result:
+            raise ParameterError(
+                "MCBP_AI on this base predates register aggregation (agg/groupby on register "
+                "records) - update the MCBP_AI configuration; do not add up raw rows as totals"
+            )
+        return result
 
     async def get_event_log(self, levels: list[str] | str | None = None,
                             date_from: str | None = None, date_to: str | None = None,
@@ -1043,10 +1063,32 @@ class MCBPClient:
         full = await self._cached_get(f"/ai/v1/metadata/{kind}/{type_}")
         return _describe_metadata_view(full, tabular_section, q)
 
-    async def get_object(self, kind: str, type_: str, object_id: str) -> dict:
-        """FULL data of one object (all attributes + tabular sections) by its Ref UUID.
-        Lists return only standard fields; this is the drill-down for a specific record."""
-        return await self._request("GET", f"/ai/v1/object/{kind}/{type_}/{object_id}")
+    async def get_object(self, kind: str, type_: str, object_id: str,
+                         fields: list[str] | str | None = None,
+                         sections: list[str] | str | None = None,
+                         rows: int | None = None, offset: int | None = None) -> dict:
+        """Data of one object (attributes + tabular sections) by its Ref UUID.
+        Lists return only standard fields; this is the drill-down for a specific record.
+
+        Without selectors: the FULL object. `fields` narrows the header attributes (the standard
+        ones stay), `sections` names the tabular sections to return (`[]` - none), `rows`/`offset`
+        window each returned section. Any selector adds `tabular_section_counts` (total rows of
+        every section). A base whose MCBP_AI predates the selectors returns the full object; it
+        is then trimmed here, so callers see the same shape either way."""
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = _csv(fields)
+        if sections is not None:
+            params["sections"] = _csv(sections) or "none"
+        if rows is not None:
+            params["rows"] = rows
+        if offset:
+            params["offset"] = offset
+        result = await self._request("GET", f"/ai/v1/object/{kind}/{type_}/{object_id}",
+                                     params=params or None)
+        if params and isinstance(result, dict) and "tabular_section_counts" not in result:
+            result = _select_object_view(result, fields, sections, rows, offset)
+        return result
 
     async def patch_object(self, kind: str, type_: str, object_id: str, fields: dict) -> dict:
         """Natively writes the named header attributes and tabular sections of one object — no
@@ -1347,6 +1389,95 @@ def _mock_extra_fields(kw: dict) -> dict:
         return {}
     names = fields.split(",") if isinstance(fields, str) else fields
     return {name.strip(): f"<mock:{name.strip()}>" for name in names if name and name.strip()}
+
+
+def _csv(value: list[str] | str) -> str:
+    return ",".join(value) if isinstance(value, list) else value
+
+
+def _names(value: list[str] | str | None) -> list[str] | None:
+    if value is None:
+        return None
+    items = value.split(",") if isinstance(value, str) else value
+    return [item.strip() for item in items if item and item.strip() and item.strip() != "none"]
+
+
+# Canonical keys of the standard row (MCBP_Server.GetStandardAttributeMap + Ref): `fields`
+# narrows the header attributes, never these.
+_STANDARD_ROW_KEYS = frozenset({"Ref", "Date", "Number", "Code", "DeletionMark", "Description",
+                                "Owner", "Parent", "ValueType", "IsFolder", "Posted"})
+
+
+def _select_object_view(result: dict, fields: list[str] | str | None,
+                        sections: list[str] | str | None, rows: int | None,
+                        offset: int | None) -> dict:
+    """Applies get_object selectors to a FULL object answer - the fallback for a base whose
+    MCBP_AI ignores them, and the mock's own implementation of the new BSL behaviour."""
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return result
+    tabular = data.get("tabular_sections")
+    tabular = tabular if isinstance(tabular, dict) else {}
+    counts = {name: len(value) if isinstance(value, list) else 0
+              for name, value in tabular.items()}
+    wanted = _names(sections)
+    if wanted is not None:
+        unknown = [name for name in wanted if name not in tabular]
+        if unknown:
+            raise ParameterError(
+                f"Unknown tabular section '{unknown[0]}' - tabular sections of this type: "
+                + (", ".join(tabular) or "none"))
+    start = offset or 0
+    stop = start + rows if rows is not None else None
+    selected = {name: value[start:stop] if isinstance(value, list) else value
+                for name, value in tabular.items() if wanted is None or name in wanted}
+    keep = _names(fields) or None  # fields=[] means "no narrowing", same as None
+    if keep is not None:
+        attributes = {key.casefold(): key for key in data if key != "tabular_sections"}
+        unknown = [name for name in keep if name.casefold() not in attributes]
+        if unknown:
+            raise ParameterError(
+                f"Unknown field '{unknown[0]}' - attributes of this object: "
+                + (", ".join(attributes.values()) or "none"))
+        keep = {attributes[name.casefold()] for name in keep}
+    view = {key: value for key, value in data.items()
+            if key != "tabular_sections"
+            and (keep is None or key in _STANDARD_ROW_KEYS or key in keep)}
+    view["tabular_sections"] = selected
+    return dict(result, data=view, tabular_section_counts=counts)
+
+
+def _mock_register_aggregates(type_: str, kw: dict) -> dict:
+    """Mirrors the BAS register `agg=`/`groupby=` shape: rows keyed by each group field's own
+    name, Period buckets as YYYY-MM-DD, `groupby` echoed as a list (None without it)."""
+    params = kw.get("params") or {}
+    specs = str(params.get("agg")).split(",")
+    groups = [g.strip() for g in str(params.get("groupby") or "").split(",") if g.strip()]
+    if len(groups) > 4:
+        raise ParameterError(f"groupby takes at most 4 fields, got {len(groups)}")
+    measures: dict[str, Any] = {}
+    for spec in specs:
+        func, _, field = spec.partition(":")
+        if func == "count":
+            measures["count"] = 2
+        elif field == "*":
+            measures[f"{func}_Сумма"] = 1234.5
+        else:
+            measures[f"{func}_{field}"] = 1234.5
+    rows = []
+    for index in (1, 2) if groups else (1,):
+        row: dict[str, Any] = {}
+        for group in groups:
+            name, _, granularity = group.partition(":")
+            if granularity:
+                row[name] = f"2026-0{index}-01"
+            else:
+                row[name] = {"Presentation": f"<mock-{name}-{index}>",
+                             "Data": f"mock-{index}", "Metadata": name}
+        row.update(measures)
+        rows.append(row)
+    return {"metadata": "accumulationregister", "type": type_,
+            "groupby": groups or None, "aggregates": rows, "truncated": False}
 
 
 def _mock_aggregates(kw: dict) -> dict | None:
@@ -2455,14 +2586,26 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return {"metadata": kind.lower(), "type": type_, "id": object_id,
                 "changed": changed, "posted": True}
     if "ai/v1/object/" in path:  # singular: full data of one object (dict, not a list — §4.10)
-        return {"metadata": "catalog", "type": path.split("/")[-2],
-                 "data": {
-                     "Ref": {"Presentation": "Альфа Трейд, ТОВ", "Data": "e3f1d9b6-0002",
-                              "Metadata": "Контрагенты"},
-                     "Code": "000000002", "Description": "Альфа Трейд, ТОВ",
-                     "DeletionMark": False, "IsFolder": False,
-                     "Pokupatel": True, "KodPoEDRPOU": "314159265",
-                 }}
+        full = {"metadata": "catalog", "type": path.split("/")[-2],
+                "data": {
+                    "Ref": {"Presentation": "Альфа Трейд, ТОВ", "Data": "e3f1d9b6-0002",
+                            "Metadata": "Контрагенты"},
+                    "Code": "000000002", "Description": "Альфа Трейд, ТОВ",
+                    "DeletionMark": False, "IsFolder": False,
+                    "Pokupatel": True, "KodPoEDRPOU": "314159265",
+                    "tabular_sections": {
+                        "КонтактнаяИнформация": [{"Вид": "Телефон", "Представление": f"<mock-{i}>"}
+                                                 for i in range(1, 4)],
+                    },
+                }}
+        params = kw.get("params") or {}
+        if not params:
+            return full
+        rows = params.get("rows")
+        offset = params.get("offset")
+        return _select_object_view(full, params.get("fields"), params.get("sections"),
+                                   int(rows) if rows is not None else None,
+                                   int(offset) if offset is not None else None)
     if "/ai/context" in path:
         return {"accepted": True, "conversation_id": "mock-conv"}
     if "/catalogs/" in path or "/documents/" in path:
@@ -2533,6 +2676,11 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return {"register": path.split("/")[-2], "created": True, "key": {},
                 "changed": changed}
     if "/registers/" in path and path.endswith("/records"):
+        params = kw.get("params") or {}
+        if params.get("agg"):
+            return _mock_register_aggregates(path.split("/")[-2], kw)
+        if params.get("groupby"):
+            raise ParameterError("groupby needs agg")
         rows = [
             {"Period": "2026-08-01 00:00:00",
              "Recorder": {"Presentation": "ЗП-00001", "Data": "doc-0001",

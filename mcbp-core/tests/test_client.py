@@ -857,3 +857,170 @@ async def test_conflict_envelope_typed_as_plain_conflict_error():
         await client.shutdown()
     assert not isinstance(exc.value, LockedError)
     assert exc.value.code == "CONFLICT"
+
+
+@respx.mock
+async def test_register_records_sends_agg_and_groupby_csv():
+    route = respx.get("http://test/ai/v1/registers/Бюджеты/records").mock(
+        return_value=httpx.Response(200, json={
+            "metadata": "accumulationregister", "type": "Бюджеты",
+            "groupby": ["Статья", "Period:month"],
+            "aggregates": [{"Статья": {"Presentation": "X"}, "Period": "2026-01-01",
+                            "sum_Сумма": 1.0, "count": 1}],
+            "truncated": False,
+        })
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.register_records(
+            "Бюджеты", agg=["sum:Сумма", "count"], groupby=["Статья", "Period:month"])
+        params = dict(route.calls[0].request.url.params)
+        assert params["agg"] == "sum:Сумма,count"
+        assert params["groupby"] == "Статья,Period:month"
+        assert result["aggregates"][0]["sum_Сумма"] == 1.0
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_register_records_agg_on_old_bsl_raises_instead_of_raw_rows():
+    respx.get("http://test/ai/v1/registers/Бюджеты/records").mock(
+        return_value=httpx.Response(200, json={
+            "metadata": "accumulationregister", "type": "Бюджеты",
+            "data": [{"Сумма": 1.0}], "truncated": True,
+        })
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        with pytest.raises(ParameterError) as exc_info:
+            await client.register_records("Бюджеты", agg=["sum:*"])
+        assert "predates register aggregation" in str(exc_info.value)
+    finally:
+        await client.shutdown()
+
+
+async def test_register_records_groupby_without_agg_rejected_locally():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    with pytest.raises(ParameterError):
+        await client.register_records("Бюджеты", groupby=["Статья"])
+
+
+async def test_register_records_mock_agg_rows_keyed_by_group_field():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    result = await client.register_records(
+        "Бюджеты", agg=["sum:*", "count"], groupby=["Статья", "Period:month"])
+    assert "data" not in result
+    assert result["groupby"] == ["Статья", "Period:month"]
+    row = result["aggregates"][0]
+    assert row["Period"] == "2026-01-01"
+    assert row["Статья"]["Presentation"]
+    assert row["count"] == 2
+    total = await client.register_records("Бюджеты", agg=["count"])
+    assert total["groupby"] is None
+    assert len(total["aggregates"]) == 1
+
+
+_FULL_OBJECT = {
+    "metadata": "document", "type": "Бюджет",
+    "data": {
+        "Ref": {"Presentation": "Бюджет 1", "Data": "uuid-1", "Metadata": "Бюджет"},
+        "Number": "1", "Date": "2026-01-01 00:00:00", "Posted": True,
+        "Сценарий": {"Presentation": "План"}, "Комментарий": "x",
+        "tabular_sections": {
+            "Обороты": [{"Сумма": float(i)} for i in range(10)],
+            "Показатели": [{"Значение": 1}],
+        },
+    },
+}
+
+
+@respx.mock
+async def test_get_object_sends_selectors():
+    route = respx.get("http://test/ai/v1/object/Documents/Бюджет/uuid-1").mock(
+        return_value=httpx.Response(200, json={
+            **_FULL_OBJECT, "tabular_section_counts": {"Обороты": 10, "Показатели": 1}})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.get_object("Documents", "Бюджет", "uuid-1", fields=["Сценарий"],
+                                         sections=[], rows=50, offset=50)
+        params = dict(route.calls[0].request.url.params)
+        assert params == {"fields": "Сценарий", "sections": "none", "rows": "50",
+                          "offset": "50"}
+        assert result["tabular_section_counts"] == {"Обороты": 10, "Показатели": 1}
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_get_object_without_selectors_sends_no_params():
+    route = respx.get("http://test/ai/v1/object/Documents/Бюджет/uuid-1").mock(
+        return_value=httpx.Response(200, json=_FULL_OBJECT))
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.get_object("Documents", "Бюджет", "uuid-1")
+        assert not route.calls[0].request.url.params
+        assert "tabular_section_counts" not in result
+        assert len(result["data"]["tabular_sections"]["Обороты"]) == 10
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_get_object_old_bsl_trimmed_client_side():
+    respx.get("http://test/ai/v1/object/Documents/Бюджет/uuid-1").mock(
+        return_value=httpx.Response(200, json=_FULL_OBJECT))
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.get_object("Documents", "Бюджет", "uuid-1", fields=["Сценарий"],
+                                         sections=["Обороты"], rows=3, offset=4)
+        data = result["data"]
+        assert result["tabular_section_counts"] == {"Обороты": 10, "Показатели": 1}
+        assert data["tabular_sections"] == {"Обороты": [{"Сумма": 4.0}, {"Сумма": 5.0},
+                                                        {"Сумма": 6.0}]}
+        assert data["Сценарий"] == {"Presentation": "План"}
+        assert "Комментарий" not in data
+        assert data["Number"] == "1" and data["Posted"] is True
+        with pytest.raises(ParameterError):
+            await client.get_object("Documents", "Бюджет", "uuid-1", sections=["Нема"])
+        none = await client.get_object("Documents", "Бюджет", "uuid-1", sections=[])
+        assert none["data"]["tabular_sections"] == {}
+        assert none["data"]["Комментарий"] == "x"
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_get_object_old_bsl_fields_case_insensitive_unknown_and_empty():
+    respx.get("http://test/ai/v1/object/Documents/Бюджет/uuid-1").mock(
+        return_value=httpx.Response(200, json=_FULL_OBJECT))
+    client = _live_client()
+    await client.startup()
+    try:
+        result = await client.get_object("Documents", "Бюджет", "uuid-1", fields=["сценарий"],
+                                         rows=1)
+        assert result["data"]["Сценарий"] == {"Presentation": "План"}
+        assert "Комментарий" not in result["data"]
+        with pytest.raises(ParameterError, match="Нема"):
+            await client.get_object("Documents", "Бюджет", "uuid-1", fields=["Нема"], rows=1)
+        empty = await client.get_object("Documents", "Бюджет", "uuid-1", fields=[], rows=1)
+        assert empty["data"]["Комментарий"] == "x"
+        assert empty["data"]["Сценарий"] == {"Presentation": "План"}
+    finally:
+        await client.shutdown()
+
+
+async def test_get_object_mock_honours_selectors():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    result = await client.get_object("Catalogs", "Контрагенты", "e3f1d9b6-0002", rows=1, offset=1)
+    assert result["tabular_section_counts"] == {"КонтактнаяИнформация": 3}
+    assert result["data"]["tabular_sections"]["КонтактнаяИнформация"] == [
+        {"Вид": "Телефон", "Представление": "<mock-2>"}]

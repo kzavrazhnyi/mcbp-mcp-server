@@ -392,6 +392,20 @@ def _b32(digest: bytes, length: int) -> str:
 
 # --- Masker ----------------------------------------------------------------------
 
+# Group keys of the RecordType enum in register aggregates (canonical + RU/UA attribute names).
+_RECORD_TYPE_KEYS = frozenset({"recordtype", "виддвижения", "видруху"})
+
+
+def _is_record_type_value(value: Any) -> bool:
+    """The AccumulationRecordType shape BSL emits: a bare string or a presentation-only
+    `{"Presentation": ...}` (platform enum, no UUID/Metadata). A reference dict - anything
+    carrying `Data`/`Metadata`/`Value` - is a real dimension value and stays masked."""
+    if isinstance(value, str):
+        return True
+    return (isinstance(value, dict) and value.keys() == {"Presentation"}
+            and isinstance(value["Presentation"], str))
+
+
 class Masker:
     """Session-scoped pseudonymizer. Pure, synchronous, no I/O.
 
@@ -576,6 +590,21 @@ class Masker:
         self, value: dict[str, Any], context: str | None
     ) -> dict[str, Any]:
         groupby_field = value.get("groupby")
+        # Register aggregates: `groupby` is a list and each group value sits under its own field
+        # name. A `Period:<granularity>` bucket is a calendar date, not data about anyone - left
+        # open, or a by-month breakdown would come back as unreadable pseudonyms.
+        # RecordType (receipt/expense) is a platform enum, not PII: masked, the split rows would be
+        # indistinguishable. Open ONLY when BSL marked the split (`record_type_split: true`, set
+        # for balance accumulation registers alone) - an information register may have its own
+        # dimension named ВидДвижения, which is ordinary data and masked like any other.
+        open_keys: set[str] = set()
+        record_type_open = False
+        if isinstance(groupby_field, list):
+            open_keys = {str(item).split(":", 1)[0] for item in groupby_field
+                         if ":" in str(item)}
+            record_type_open = value.get("record_type_split") is True
+            groupby_field = None
+        context = self._dotted_type(value.get("type"), value.get("metadata")) or context
         out = dict(value)
         rows = value.get("aggregates") or []
         masked_rows = []
@@ -587,6 +616,11 @@ class Masker:
             for k, v in row.items():
                 if k == "group" and groupby_field:
                     masked_row[k] = self._mask_scalar(groupby_field, v, context)
+                elif k in open_keys or (
+                    record_type_open and k.casefold() in _RECORD_TYPE_KEYS
+                    and _is_record_type_value(v)
+                ):
+                    masked_row[k] = v
                 else:
                     masked_row[k] = self._walk_value(k, v, context)
             masked_rows.append(masked_row)

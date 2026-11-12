@@ -98,7 +98,7 @@ async def _register_records(c: MCBPClient, a: dict) -> Any:
     return await c.register_records(
         type_=a["type"], date_from=a.get("from"), date_to=a.get("to"),
         filters=a.get("filters"), orderby=a.get("orderby"), desc=bool(a.get("desc", False)),
-        limit=a.get("limit", 100),
+        limit=a.get("limit", 100), agg=a.get("agg"), groupby=a.get("groupby"),
     )
 
 
@@ -130,8 +130,17 @@ async def _describe_metadata(c: MCBPClient, a: dict) -> Any:
     )
 
 
+# Tool-layer default for rows per tabular section: a 1.68M-char budget document in one tool
+# result is useless to the model; it pages with `offset` using `tabular_section_counts`.
+_OBJECT_ROWS_DEFAULT = 200
+
+
 async def _get_object(c: MCBPClient, a: dict) -> Any:
-    return await c.get_object(kind=a["metadata"], type_=a["type"], object_id=a["id"])
+    return await c.get_object(
+        kind=a["metadata"], type_=a["type"], object_id=a["id"], fields=a.get("fields"),
+        sections=a.get("tabular_sections"), rows=a.get("rows_limit", _OBJECT_ROWS_DEFAULT),
+        offset=a.get("offset"),
+    )
 
 
 async def _health(c: MCBPClient, a: dict) -> Any:
@@ -578,11 +587,25 @@ TOOLS: dict[str, ToolSpec] = {
         "структурні інструменти (describe_metadata/get_schema/list_metadata) НЕ містять значень "
         "реквізитів — не роби висновок «поле порожнє» доти, доки не перевірив саме тут. "
         "Виклич після того, як список знайшов потрібний запис — передай його id (UUID з поля "
-        "Ref.Data у рядку списку).",
+        "Ref.Data у рядку списку). Великі документи: передай `tabular_sections` (імена з "
+        "describe_metadata; [] — без табличних частин) і `rows_limit` (типово 200 рядків на "
+        "частину); `tabular_section_counts` у відповіді показує повний розмір кожної частини — "
+        "решту гортай через `offset`.",
         _params(
             {"metadata": {"type": "string", "description": "Вид: Catalogs, Documents, Tasks, ..."},
              "type": {"type": "string", "description": "Тип об'єкта, напр. Контрагенты, ЗаказПокупателя"},
-             "id": {"type": "string", "description": "UUID об'єкта (Ref.Data зі списку)"}},
+             "id": {"type": "string", "description": "UUID об'єкта (Ref.Data зі списку)"},
+             "fields": {"type": "array", "items": {"type": "string"},
+                        "description": "Лише ці реквізити шапки (стандартні — Ref, Code/Number, "
+                                       "Description/Date… — є завжди); без поля — усі"},
+             "tabular_sections": {"type": "array", "items": {"type": "string"},
+                                  "description": "Лише ці табличні частини; [] — жодної; без "
+                                                 "поля — усі"},
+             "rows_limit": {"type": "integer", "default": 200, "minimum": 1, "maximum": 1000,
+                            "description": "Максимум рядків на кожну табличну частину"},
+             "offset": {"type": "integer", "minimum": 0,
+                        "description": "Пропустити перші N рядків кожної табличної частини "
+                                       "(наступна сторінка)"}},
             ["metadata", "type", "id"],
         ),
         _get_object,
@@ -592,7 +615,10 @@ TOOLS: dict[str, ToolSpec] = {
             "and structure tools (describe_metadata/get_schema/list_metadata) do NOT contain "
             "attribute values — never conclude 'the field is empty' until you've checked here. "
             "Call it after a list has found the record you need — pass its id (the UUID from "
-            "the list row's Ref.Data field)."
+            "the list row's Ref.Data field). Large documents: pass `tabular_sections` (names "
+            "from describe_metadata; [] — no tabular sections) and `rows_limit` (default 200 "
+            "rows per section); `tabular_section_counts` in the response shows the full size of "
+            "each section — page through the rest with `offset`."
         )),
     "health": ToolSpec(
         "health",
@@ -741,7 +767,14 @@ TOOLS: dict[str, ToolSpec] = {
         "першими) — щоб отримати ОСТАННІЙ запис, досить limit=1 (або явно orderby=\"Period\", "
         "desc=true, limit=1). Курсорної пагінації НЕМАЄ (немає Ref, немає стабільного ключа) "
         "— `truncated: true` у відповіді означає «звузь фільтр», а НЕ «візьми наступну "
-        "сторінку». Спершу list_metadata/describe_metadata, щоб дізнатись точні імена полів.",
+        "сторінку». Спершу list_metadata/describe_metadata, щоб дізнатись точні імена полів. "
+        "Для підсумків/порівнянь/план-факту — ЗАВЖДИ `agg` (+`groupby`), ніколи не тягни сирі "
+        "рядки, щоб скласти їх самому. Приклад: agg=[\"sum:*\"], groupby=[\"<вимір статті>\","
+        "\"<вимір сценарію>\"] → один рядок на статтю×сценарій. `Period:month|quarter|year` "
+        "групує за періодом. Відповідь тоді — {\"aggregates\":[...]} замість {\"data\":[...]}; "
+        "неактивні рухи не враховуються; у регістрі залишків групи розділені за RecordType "
+        "(прихід/витрата окремо, `record_type_split: true`). Сирі рядки — лише щоб подивитись "
+        "окремі рухи.",
         _params(
             {"type": {"type": "string",
                       "description": "Ім'я регістру відомостей або накопичення (з list_metadata)"},
@@ -751,7 +784,17 @@ TOOLS: dict[str, ToolSpec] = {
                          "description": "{ім'я_поля: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}"},
              "orderby": {"type": "string", "description": "Поле сортування, напр. Period"},
              "desc": {"type": "boolean", "default": False},
-             "limit": {"type": "integer", "default": 100}},
+             "limit": {"type": "integer", "default": 100,
+                       "description": "Рядків (з agg — груп), 1..1000"},
+             "agg": {"type": "array", "items": {"type": "string"},
+                     "description": "Агрегати замість рядків: count, sum:<Поле>, avg/min/max:<Поле> "
+                                    "(поле числове); sum:* — сума всіх числових ресурсів. Напр. "
+                                    "[\"sum:*\",\"count\"]. З agg `orderby` — псевдонім агрегата "
+                                    "(sum_<Поле>, count) або поле групування"},
+             "groupby": {"type": "array", "items": {"type": "string"},
+                         "description": "До 4 полів групування для agg: вимір/реквізит "
+                                        "(напр. Статья) або Period:day|week|month|quarter|year. "
+                                        "Без agg — 422"}},
             ["type"],
         ),
         _register_records,
@@ -776,7 +819,14 @@ TOOLS: dict[str, ToolSpec] = {
             "get the LATEST record, limit=1 is enough (or explicitly orderby=\"Period\", "
             "desc=true, limit=1). There is NO cursor pagination (no Ref, no stable key) — "
             "`truncated: true` in the response means 'narrow the filter', NOT 'fetch the next "
-            "page'. Call list_metadata/describe_metadata first to learn the exact field names."
+            "page'. Call list_metadata/describe_metadata first to learn the exact field names. "
+            "For totals/compare/plan-vs-fact — ALWAYS `agg` (+`groupby`), never pull raw rows and "
+            "add them up. Example: agg=[\"sum:*\"], groupby=[\"<item dimension>\",\"<scenario "
+            "dimension>\"] → one row per item×scenario. `Period:month|quarter|year` buckets by "
+            "period. The response is then {\"aggregates\":[...]} instead of {\"data\":[...]}; "
+            "inactive movements are excluded; on a balance register the groups are split by "
+            "RecordType (receipt/expense separately, `record_type_split: true`). Raw rows only to "
+            "inspect individual movements."
         )),
     "set_function_status": ToolSpec(
         "set_function_status",

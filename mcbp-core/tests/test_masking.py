@@ -810,3 +810,86 @@ def test_unrelated_catalog_still_masked_alongside_contact_information_default():
     row = result["data"][0]
     assert row["Ref"]["Presentation"] != "Бета Логістик, ТОВ"
     assert row["Description"] != "Бета Логістик, ТОВ"
+
+
+def test_register_aggregates_mask_dimensions_keep_period_and_numbers():
+    masker = Masker(type_classifier=_classifier)
+    payload = {
+        "metadata": "accumulationregister", "type": "ДенежныеСредства",
+        "groupby": ["Контрагент", "Период:month"],
+        "aggregates": [
+            {"Контрагент": _ref("Контрагенты", "uuid-1", "Альфа Трейд, ТОВ"),
+             "Период": "2026-01-01", "sum_Сумма": 1234.5, "count": 7},
+            {"Контрагент": _ref("Контрагенты", "uuid-2", "Бета Постач, ТОВ"),
+             "Период": "2026-02-01", "sum_Сумма": 42.0, "count": 1},
+        ],
+        "truncated": False,
+        "record_type_split": True,
+    }
+    result = masker.mask(payload)
+    rows = result["aggregates"]
+    assert rows[0]["Контрагент"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert rows[0]["Контрагент"]["Presentation"] != rows[1]["Контрагент"]["Presentation"]
+    assert rows[0]["Период"] == "2026-01-01"
+    assert rows[1]["Период"] == "2026-02-01"
+    assert rows[0]["sum_Сумма"] == 1234.5
+    assert rows[0]["count"] == 7
+    assert result["groupby"] == ["Контрагент", "Период:month"]
+    assert result["record_type_split"] is True
+
+
+def test_register_aggregates_keep_record_type_open_mask_dimensions():
+    masker = Masker(type_classifier=_classifier)
+    payload = {
+        "metadata": "accumulationregister", "type": "ДенежныеСредства",
+        "groupby": ["Контрагент", "RecordType"],
+        "aggregates": [
+            {"Контрагент": _ref("Контрагенты", "uuid-1", "Альфа Трейд, ТОВ"),
+             "RecordType": {"Presentation": "Приход"}, "sum_Сумма": 100.0},
+            {"Контрагент": _ref("Контрагенты", "uuid-1", "Альфа Трейд, ТОВ"),
+             "RecordType": {"Presentation": "Расход"}, "sum_Сумма": 40.0},
+        ],
+        "truncated": False,
+        "record_type_split": True,
+    }
+    rows = masker.mask(payload)["aggregates"]
+    assert rows[0]["RecordType"] == {"Presentation": "Приход"}
+    assert rows[1]["RecordType"] == {"Presentation": "Расход"}
+    assert rows[0]["Контрагент"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert rows[1]["Контрагент"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert rows[0]["sum_Сумма"] == 100.0
+
+
+def test_information_register_aggregate_masks_reference_dimension_named_record_type():
+    # No `record_type_split`: BSL adds the RecordType split for balance accumulation registers
+    # only, so an info-register dimension that happens to be named ВидДвижения is plain data.
+    masker = Masker(type_classifier=_classifier)
+    payload = {
+        "metadata": "informationregister", "type": "КурсыВалют",
+        "groupby": ["ВидДвижения"],
+        "aggregates": [
+            {"ВидДвижения": _ref("Контрагенты", "uuid-1", "Альфа Трейд, ТОВ"), "count": 3},
+        ],
+        "truncated": False,
+    }
+    rows = masker.mask(payload)["aggregates"]
+    assert rows[0]["ВидДвижения"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert rows[0]["count"] == 3
+
+
+def test_record_type_split_still_masks_reference_valued_record_type_key():
+    # Even with the split flag, only the bare enum shape is left open - a reference dict is masked.
+    masker = Masker(type_classifier=_classifier)
+    payload = {
+        "metadata": "accumulationregister", "type": "ДенежныеСредства",
+        "groupby": ["ВидДвижения"],
+        "aggregates": [
+            {"ВидДвижения": _ref("Контрагенты", "uuid-1", "Альфа Трейд, ТОВ"), "count": 1},
+            {"ВидДвижения": "Приход", "count": 2},
+        ],
+        "truncated": False,
+        "record_type_split": True,
+    }
+    rows = masker.mask(payload)["aggregates"]
+    assert rows[0]["ВидДвижения"]["Presentation"] != "Альфа Трейд, ТОВ"
+    assert rows[1]["ВидДвижения"] == "Приход"
