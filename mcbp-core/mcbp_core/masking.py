@@ -133,6 +133,15 @@ _KIND_DOTTED_PREFIX: dict[str, str] = {
     "accountingregister": "РегистрБухгалтерии.",
 }
 
+# Family `kind` hint: "the name is SOME register" (accumulation / information / accounting)
+# when the caller (e.g. a register tool) knows the family but not which register kind.
+# `_dotted_type` then picks the register kind that owns the bare name in the inventory,
+# ignoring non-register kinds sharing the name (a chart of accounts named like its register).
+REGISTER_FAMILY_KIND = "register"
+_REGISTER_DOTTED_PREFIXES: tuple[str, ...] = tuple(
+    prefix for kind, prefix in _KIND_DOTTED_PREFIX.items() if kind.endswith("register")
+)
+
 # `list_metadata("all")` top-level keys (plural) -> dotted-type prefix. Used by
 # `build_type_classifier` to turn the whole-configuration inventory into a TypeClassifier.
 _INVENTORY_KIND_PREFIX: dict[str, str] = {
@@ -619,9 +628,21 @@ class Masker:
         if not type_name:
             return None
         if kind:
+            if kind.lower() == REGISTER_FAMILY_KIND:
+                return self._register_type(type_name)
             prefix = _KIND_DOTTED_PREFIX.get(kind.lower())
             if prefix:
                 return f"{prefix}{type_name}"
+        return self._classify(type_name)
+
+    def _register_type(self, type_name: str) -> str | None:
+        # An inventory classifier knows every kind a name has; a plain callable only its one
+        # answer. Without a register candidate, fall back to the plain classification.
+        all_types = getattr(self._classify, "all_types", None)
+        candidates = all_types(type_name) if callable(all_types) else (self._classify(type_name),)
+        for dotted in candidates:
+            if dotted and dotted.startswith(_REGISTER_DOTTED_PREFIXES):
+                return dotted
         return self._classify(type_name)
 
     def _row_context(self, row: Any, fallback: str | None) -> str | None:
@@ -1004,12 +1025,31 @@ class StreamRehydrator:
 
 # --- Optional async helper: build a TypeClassifier from a live MCBPClient ---------
 
-def _merge_inventory_items(mapping: dict[str, str], prefix: str, items: Any) -> None:
-    # Never overwrite: the first kind to claim a bare name keeps it (see _INVENTORY_MERGE_ORDER).
+def _merge_inventory_items(mapping: dict[str, list[str]], prefix: str, items: Any) -> None:
+    # Keep every kind a bare name has, in merge order: the first entry is the kind that claims
+    # the name for a plain lookup (see _INVENTORY_MERGE_ORDER); the rest serve kind hints.
     for item in items or ():
         name = item.get("name") if isinstance(item, dict) else None
-        if name and name not in mapping:
-            mapping[name] = f"{prefix}{name}"
+        if name:
+            dotted = f"{prefix}{name}"
+            kinds = mapping.setdefault(name, [])
+            if dotted not in kinds:
+                kinds.append(dotted)
+
+
+class _InventoryClassifier:
+    """`TypeClassifier` over the metadata inventory: called with a bare name it answers the
+    name's first-claiming kind; `all_types(name)` lists every kind the name has."""
+
+    def __init__(self, mapping: dict[str, list[str]]) -> None:
+        self._mapping = mapping
+
+    def __call__(self, name: str) -> str | None:
+        kinds = self._mapping.get(name)
+        return kinds[0] if kinds else None
+
+    def all_types(self, name: str) -> tuple[str, ...]:
+        return tuple(self._mapping.get(name, ()))
 
 
 # The classifier maps BARE names, and a register often shares its name with a reference type —
@@ -1039,7 +1079,7 @@ async def build_type_classifier(client: MCBPClient) -> TypeClassifier:
     recognize that kind's names, same as if it truly doesn't exist on this
     configuration. This is a one-time startup cost, run concurrently."""
     payload = await client.list_metadata("all")
-    mapping: dict[str, str] = {}
+    mapping: dict[str, list[str]] = {}
     items_by_key: dict[str, Any] = {}
     missing_keys: list[str] = list(_INVENTORY_KIND_PREFIX)
     if isinstance(payload, dict):
@@ -1077,7 +1117,4 @@ async def build_type_classifier(client: MCBPClient) -> TypeClassifier:
             _merge_inventory_items(mapping, _INVENTORY_KIND_PREFIX[inventory_key],
                                    items_by_key[inventory_key])
 
-    def classify(name: str) -> str | None:
-        return mapping.get(name)
-
-    return classify
+    return _InventoryClassifier(mapping)

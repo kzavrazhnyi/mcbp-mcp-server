@@ -3,7 +3,12 @@ text rehydration (including streaming), and policy overrides. Pure/sync — no B
 no network, matches the `mcbp-core` no-network testing convention."""
 from __future__ import annotations
 
-from mcbp_core.masking import Masker, MaskingPolicy, build_type_classifier
+from mcbp_core.masking import (
+    REGISTER_FAMILY_KIND,
+    Masker,
+    MaskingPolicy,
+    build_type_classifier,
+)
 
 
 def _classifier(name: str) -> str | None:
@@ -1019,6 +1024,31 @@ async def test_chart_and_register_sharing_a_name_keep_the_account_open():
     account = _account("361", "Розрахунки з вітчизняними покупцями")
     assert masker.mask({"data": [{"Account": account}], "cursor": None})["data"][0][
         "Account"] == account
+
+
+async def test_register_family_hint_picks_the_register_sharing_a_chart_name():
+    client = _FakeClient({"all": {
+        "chartsofaccounts": [{"name": "Хозрасчетный"}],
+        "accountingregisters": [{"name": "Хозрасчетный"}],
+        "accumulationregisters": [{"name": "Продажи"}],
+        "catalogs": [{"name": "Контрагенты"}],
+    }})
+    masker = Masker(type_classifier=await build_type_classifier(client))
+    assert masker._dotted_type("Хозрасчетный", REGISTER_FAMILY_KIND) == (
+        "РегистрБухгалтерии.Хозрасчетный")
+    assert masker._dotted_type("Продажи", REGISTER_FAMILY_KIND) == "РегистрНакопления.Продажи"
+    # None and explicit kinds keep their old behaviour.
+    assert masker._dotted_type("Хозрасчетный", None) == "ПланСчетов.Хозрасчетный"
+    assert masker._dotted_type("Хозрасчетный", "chartofaccounts") == "ПланСчетов.Хозрасчетный"
+    # No register owns the name -> plain classification, as with kind None.
+    assert masker._dotted_type("Контрагенты", REGISTER_FAMILY_KIND) == "Справочник.Контрагенты"
+    assert masker._dotted_type("Нет", REGISTER_FAMILY_KIND) is None
+
+
+def test_register_family_hint_with_plain_classifier_falls_back_to_it():
+    masker = Masker(type_classifier={"Х": "ПланСчетов.Х", "Р": "РегистрСведений.Р"}.get)
+    assert masker._dotted_type("Р", REGISTER_FAMILY_KIND) == "РегистрСведений.Р"
+    assert masker._dotted_type("Х", REGISTER_FAMILY_KIND) == "ПланСчетов.Х"
 
 
 async def test_accounting_register_kind_is_classified_when_alone():
