@@ -450,7 +450,8 @@ TOOLS: dict[str, ToolSpec] = {
         "drcr_turnovers (обороти Дт→Кт, кореспонденція); для трьох останніх `from` обов'язковий, "
         "`to` без значення — сьогодні. account=[\"361\"] включає субрахунки. За замовчуванням — "
         "один рядок на рахунок; groupby=[\"ExtDimension1\"] дає розріз за субконто "
-        "(`ext_dimension_types` у відповіді каже, що таке ExtDimensionN для кожного рахунку). "
+        "(`ext_dimension_types` у відповіді каже, що таке ExtDimensionN для кожного рахунку); "
+        "для drcr_turnovers субконто в filters/groupby — ExtDimensionDr1..N / ExtDimensionCr1..N. "
         "resources=[\"<основна сума>\"] зменшує відповідь. Самі проводки — get_register_records. "
         "Якщо база відповідає, що MCBP_AI застарів — треба оновити конфігурацію.",
         _params(
@@ -459,7 +460,8 @@ TOOLS: dict[str, ToolSpec] = {
              "filters": {"type": "object",
                          "description": "{ім'я_виміру: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}. "
                                         "Для регістру бухгалтерії — вимір або ExtDimension1..N "
-                                        "(ExtDimension — будь-яка позиція)"},
+                                        "(ExtDimension — будь-яка позиція); для "
+                                        "drcr_turnovers — ExtDimensionDr1..N / ExtDimensionCr1..N"},
              "on": {"type": "string",
                     "description": "Дата, СТАНОМ НА яку рахувати залишок, YYYY-MM-DD. Без неї — "
                                    "поточний залишок. Це НЕ фільтр за виміром: сюди йде лише дата "
@@ -503,7 +505,9 @@ TOOLS: dict[str, ToolSpec] = {
             "drcr_turnovers (Dr→Cr correspondence turnovers); the last three need `from`, a "
             "missing `to` means today. account=[\"361\"] includes subaccounts. By default one "
             "line per account; groupby=[\"ExtDimension1\"] breaks it down by extdimension "
-            "(`ext_dimension_types` in the answer names what ExtDimensionN is for each account). "
+            "(`ext_dimension_types` in the answer names what ExtDimensionN is for each account); "
+            "for drcr_turnovers the extdimension keys in filters/groupby are "
+            "ExtDimensionDr1..N / ExtDimensionCr1..N. "
             "resources=[\"<main amount>\"] keeps the answer small. Postings themselves — "
             "get_register_records. If the base answers that MCBP_AI is outdated, the "
             "configuration must be updated."

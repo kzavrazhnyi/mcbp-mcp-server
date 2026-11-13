@@ -8,12 +8,12 @@ import hashlib
 from mcbp_core.tools import TOOLS, tool_specs
 
 # Snapshot of the Ukrainian `description` values as of the commit that introduced
-# `description_en` (search_catalog/filter_catalog hashes updated in 0.1.9 for the count rule; patch_object for tabular sections, create mode and DeletionMark; write_object for the nested reference form; get_object/get_register_records in 0.1.30 for selectors and register aggregation; get_register_balance/get_register_records/list_metadata/describe_metadata in 0.1.31 for accounting registers) — guards against an accidental reword invalidating the Anthropic prompt cache.
+# `description_en` (search_catalog/filter_catalog hashes updated in 0.1.9 for the count rule; patch_object for tabular sections, create mode and DeletionMark; write_object for the nested reference form; get_object/get_register_records in 0.1.30 for selectors and register aggregation; get_register_balance/get_register_records/list_metadata/describe_metadata in 0.1.31 for accounting registers; get_register_balance again for the drcr_turnovers ExtDimensionDr/CrN keys) — guards against an accidental reword invalidating the Anthropic prompt cache.
 _UA_DESCRIPTION_SHA256 = {
     "search_catalog": "e2e26634ff896912cf967cacf41ec79bd773ef38a01cae48050962b125dd6fae",
     "get_documents": "c5d67095d419fca314c4a938144a01b2663d3a5d9880dfe3ed39f01aa8a43950",
     "get_schema": "d3be181efe3a5b719deefee74d22116ebfbba11700ecd5e2aa7792b4a258faa7",
-    "get_register_balance": "8a73ee397fcbddf8892811a9448f49d4cf12eab362b4f72c88ce7d4feea6b6ea",
+    "get_register_balance": "c7112cf9e08417dc214ad63988ec1ea33f8470f13251cbbdb0731aded02780f8",
     "list_metadata": "935700ebfeaa3aa4bdffffb13bf0baf4f8d5788ec75ffb4468a69811c8aa433d",
     "describe_metadata": "8b94195d559f095e72eac87d2c00f5096eb33cabe4cb23ab560ba6467f621a68",
     "filter_catalog": "b4cd2b0fe4b7e05fbfa7957646debfc70d3568615f8d4da0e3f15a90d2d5d1a0",

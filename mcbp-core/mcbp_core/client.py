@@ -648,7 +648,10 @@ class MCBPClient:
         are account codes or UUIDs, subaccounts included. `groupby` (<=4: ExtDimension1..N, a
         balance dimension, CorrAccount, Period:month) adds detail — the account is always a
         group. `resources` narrows the amount columns, `limit` caps the rows (`truncated`).
-        Remaining `filters` stay dimension / ExtDimension conditions. A lone `table="balance"`
+        Remaining `filters` stay dimension / ExtDimension conditions; with
+        `table="drcr_turnovers"` the subconto keys (filters and groupby) are
+        ExtDimensionDr1..N / ExtDimensionCr1..N - a bare ExtDimension1 is rejected there,
+        a bare `ExtDimension` matches any position and side. A lone `table="balance"`
         is what an accumulation register computes anyway, so it passes through for both kinds.
         A base whose MCBP_AI predates accounting balances either answers without a `table` key
         (raised as ParameterError, never handed back as an accounting answer) or does not know
