@@ -29,13 +29,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
-import hashlib
 import logging
 import re
 import secrets
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -87,7 +88,11 @@ _DEFAULT_OPEN_CATALOGS: tuple[str, ...] = (
 )
 
 # Exact field names always open regardless of context (unless forced_mask matches).
-_DEFAULT_OPEN_FIELD_NAMES: tuple[str, ...] = ("Number", "Номер", "Date", "Дата", "id", "Data")
+_DEFAULT_OPEN_FIELD_NAMES: tuple[str, ...] = (
+    "Number", "Номер", "Date", "Дата", "id", "Data",
+    # The platform's standard Period attribute of registers (EN / inherited RU / UA).
+    "Period", "Период", "Період",
+)
 
 # Case-insensitive substrings (whitespace-stripped, lowercased) of a field name that
 # force masking no matter what — identifying data and free text, per the goal.
@@ -103,6 +108,7 @@ _DEFAULT_FORCED_SUBSTRINGS: tuple[str, ...] = (
     "электроннаяпочта", "електроннапошта",
     "адрес", "адреса", "address",
     "датарождения", "датанароджен", "birthdate", "birthday", "dateofbirth",
+    "деньрождения", "деньнародження", "рождени", "народжен",
     "комментарий", "коментар", "comment",
     "примечание", "примітка", "note",
 )
@@ -308,6 +314,32 @@ def _looks_like_code(value: str) -> bool:
     return len(s) > 1 and s[0] == "0"
 
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$")
+_DOTTED_DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}(?: \d{1,2}:\d{2}(?::\d{2})?)?$")
+
+
+def _looks_like_date(value: str) -> bool:
+    """A calendar date/datetime as BAS emits it — ISO `YYYY-MM-DD[THH:MM[:SS]]` or the 1C
+    `DD.MM.YYYY[ H:MM[:SS]]` form — that parses as a real date. A date is not personal data:
+    it stays open unless a forced rule (birth date, policy, per-type Mask) masks the field."""
+    s = value.strip()
+    if _ISO_DATE_RE.match(s):
+        try:
+            datetime.fromisoformat(s)
+        except ValueError:
+            return False
+        return True
+    if _DOTTED_DATE_RE.match(s):
+        time_part = s.partition(" ")[2]
+        fmt = "%d.%m.%Y" + {0: "", 1: " %H:%M", 2: " %H:%M:%S"}[time_part.count(":")]
+        try:
+            datetime.strptime(s, fmt)
+        except ValueError:
+            return False
+        return True
+    return False
+
+
 def _looks_like_reference(value: dict[str, Any]) -> bool:
     return _REF_KEYS <= value.keys()
 
@@ -457,6 +489,40 @@ class Masker:
         self._pseudo_to_original: dict[str, str] = {}
         self._pseudo_to_uuid: dict[str, str] = {}
         self._original_to_pseudo: dict[str, str] = {}
+        # rehydrate_text index, rebuilt when the pseudonym map grows (it never shrinks).
+        self._rehydrate_size = -1
+        self._rehydrate_pattern: re.Pattern[str] | None = None
+        self._rehydrate_table: dict[str, str] = {}
+        self._bare_codes: frozenset[str] = frozenset()
+
+    def _rehydrate_index(self) -> tuple[re.Pattern[str] | None, dict[str, str]]:
+        """(pattern, match -> original) over issued pseudonyms and their unambiguous codes."""
+        if self._rehydrate_size == len(self._pseudo_to_original):
+            return self._rehydrate_pattern, self._rehydrate_table
+        table = dict(self._pseudo_to_original)
+        owners: dict[str, list[str]] = {}
+        for pseudo in table:
+            _, sep, code = pseudo.rpartition("·")
+            if sep and code:
+                owners.setdefault(code, []).append(pseudo)
+        # An all-digit code would rewrite ordinary numbers in an answer: never matched bare.
+        bare = {
+            code: table[pseudos[0]] for code, pseudos in owners.items()
+            if len(pseudos) == 1 and not code.isdigit()
+        }
+        pattern: re.Pattern[str] | None = None
+        if table:
+            full = "|".join(re.escape(p) for p in sorted(table, key=len, reverse=True))
+            regex = f"(?:{full})"
+            if bare:
+                codes = "|".join(re.escape(c) for c in sorted(bare, key=len, reverse=True))
+                regex += rf"|(?<![\w·])(?:{codes})(?!\w)"
+            pattern = re.compile(regex)
+        self._rehydrate_table = {**bare, **table}
+        self._rehydrate_pattern = pattern
+        self._bare_codes = frozenset(bare)
+        self._rehydrate_size = len(table)
+        return pattern, self._rehydrate_table
 
     # --- Public API ---------------------------------------------------------------
 
@@ -470,6 +536,11 @@ class Masker:
         context = self._dotted_type(type_name, kind)
         return self._walk_value(None, result, context)
 
+    def set_policy(self, policy: MaskingPolicy) -> None:
+        """Replaces the masking rules only. The secret, the cache and the pseudonym maps are
+        kept, so every pseudonym already issued stays identical and still rehydrates/unmasks."""
+        self._policy = policy
+
     def unmask_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Replaces any known pseudonym found inside tool-call arguments — including
         values nested in `filters`/`f.*` dicts and plain `id` strings — with what the
@@ -477,19 +548,44 @@ class Masker:
         pseudonym, the original text for a masked field pseudonym."""
         return {k: self._unmask_value(v) for k, v in arguments.items()}
 
-    def rehydrate_text(self, text: str) -> str:
+    def rehydrate_text(self, text: str, *, before: str = "", after: str = "") -> str:
         """Replaces pseudonyms in free text with their REAL display value (for
         showing the human user), longest pseudonym first so one is never partially
-        swallowed by a shorter one that happens to be its prefix."""
-        if not text or "·" not in text:
+        swallowed by a shorter one that happens to be its prefix.
+
+        A model sometimes writes only the code of a pseudonym ("сценарій JYUOI2" for
+        `Kind·JYUOI2`). A BARE code is replaced too, but only one this masker issued, only
+        as a whole word (not inside a longer alphanumeric token, not after `·`), and only
+        when no two issued pseudonyms share it. Full `Kind·CODE` matches win. One pass, so
+        an inserted original is never rewritten again. `before`/`after` are the raw text
+        around `text` (a streaming caller's last emitted char / first held-back char), used
+        only for the word-boundary checks; a match running into `after` is left as written."""
+        if not text:
             return text
-        pairs = [(p, o) for p, o in self._pseudo_to_original.items() if p in text]
-        if not pairs:
+        pattern, table = self._rehydrate_index()
+        if pattern is None:
             return text
-        pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
-        for pseudo, original in pairs:
-            text = text.replace(pseudo, original)
-        return text
+        source = before + text + after
+        end = len(before) + len(text)
+        out: list[str] = []
+        last = len(before)
+        for match in pattern.finditer(source, len(before)):
+            if match.start() >= end:
+                break
+            if match.end() > end:
+                continue
+            out.append(source[last:match.start()])
+            out.append(table[match.group()])
+            last = match.end()
+        if not out:
+            return text
+        out.append(source[last:end])
+        return "".join(out)
+
+    def bare_codes(self) -> frozenset[str]:
+        """Codes of issued pseudonyms that `rehydrate_text` also replaces when written bare."""
+        self._rehydrate_index()
+        return self._bare_codes
 
     def mask_text(self, text: str) -> str:
         """Masks a free string (e.g. an upstream error message) by replacing any
@@ -713,6 +809,10 @@ class Masker:
         if _UUID_RE.match(value):
             return value
 
+        # A whole type closed by mask_type_exact masks every value of its rows, dates included.
+        if _looks_like_date(value) and context not in self._policy.mask_type_exact:
+            return value
+
         row_open = (
             context is not None
             and context in self._policy.open_type_exact
@@ -835,6 +935,9 @@ class Masker:
         return text
 
 
+_WORD_OR_DOT_RE = re.compile(r"[\w·]")
+
+
 class StreamRehydrator:
     """Stateful, streaming-safe wrapper around `Masker.rehydrate_text` for SSE text
     deltas: a pseudonym can be split across two `feed()` calls, so this buffers the
@@ -847,32 +950,56 @@ class StreamRehydrator:
     def __init__(self, masker: Masker) -> None:
         self._masker = masker
         self._buffer = ""
+        # Last raw char already emitted: the word-boundary context of the next chunk.
+        self._prev = ""
 
     def feed(self, chunk: str) -> str:
         self._buffer += chunk
         hold = self._pending_prefix_len(self._buffer)
         if hold == 0:
-            out = self._masker.rehydrate_text(self._buffer)
-            self._buffer = ""
-            return out
-        safe, self._buffer = self._buffer[:-hold], self._buffer[-hold:]
-        return self._masker.rehydrate_text(safe) if safe else ""
+            safe, self._buffer = self._buffer, ""
+        else:
+            safe, self._buffer = self._buffer[:-hold], self._buffer[-hold:]
+        # The held text follows `safe` in the final output: a bare code glued to it is not a
+        # whole word, so it is passed as lookahead context.
+        return self._emit(safe, self._buffer[:1])
 
     def flush(self) -> str:
         remaining, self._buffer = self._buffer, ""
-        return self._masker.rehydrate_text(remaining) if remaining else ""
+        return self._emit(remaining)
+
+    def _emit(self, raw: str, after: str = "") -> str:
+        if not raw:
+            return ""
+        out = self._masker.rehydrate_text(raw, before=self._prev, after=after)
+        self._prev = raw[-1]
+        return out
 
     def _pending_prefix_len(self, text: str) -> int:
         known = self._masker.known_pseudonyms()
         if not known:
             return 0
+        held = 0
         max_len = self._masker.max_known_pseudonym_length()
         limit = min(len(text), max_len - 1) if max_len > 1 else 0
         for length in range(limit, 0, -1):
             suffix = text[-length:]
             if any(p != suffix and p.startswith(suffix) for p in known):
+                held = length
+                break
+        # A trailing word that is (a prefix of) a bare code is held too, even when complete:
+        # the next chunk may extend it into a longer token that must stay as written.
+        codes = self._masker.bare_codes()
+        max_code = max((len(c) for c in codes), default=0)
+        for length in range(min(len(text), max_code), held, -1):
+            start = len(text) - length
+            before = text[start - 1] if start else self._prev
+            if before and _WORD_OR_DOT_RE.match(before):
+                continue
+            word = text[start:]
+            if any(c.startswith(word) for c in codes):
                 return length
-        return 0
+        return held
 
 
 # --- Optional async helper: build a TypeClassifier from a live MCBPClient ---------

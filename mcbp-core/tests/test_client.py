@@ -1139,6 +1139,102 @@ async def test_mock_accounting_balance_shapes():
         await client.register_balance("Хозрасчетный", {}, table="turnovers")  # no from
 
 
+async def test_mock_drcr_turnovers_account_cr_with_dimension_filter():
+    # account_cr alone (no account_dr) plus a dimension filter: both reach the request as query
+    # params and the Cr side of the answer is the requested account.
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    drcr = await client.register_balance("Хозрасчетный", {"Организация": "org-1"},
+                                         table="drcr_turnovers", date_from="2023-01-01",
+                                         date_to="2023-03-31", account_cr=["631"])
+    row = drcr["data"][0]
+    assert drcr["table"] == "drcr_turnovers"
+    assert row["AccountCr"]["Code"] == "631"
+    assert "AccountDr" in row and "СуммаTurnover" in row
+
+
+@respx.mock
+async def test_drcr_turnovers_account_cr_with_filter_sends_params():
+    route = respx.get(url__startswith="http://test/ai/v1/registers/").mock(
+        return_value=httpx.Response(200, json={"table": "drcr_turnovers", "data": []}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.register_balance("Хозрасчетный", {"Организация": "org-1"},
+                                      table="drcr_turnovers", date_from="2023-01-01",
+                                      date_to="2023-03-31", account_cr=["631"])
+        sent = route.calls[0].request.url.params
+        assert sent["account_cr"] == "631" and sent["Организация"] == "org-1"
+        assert "account_dr" not in sent and "account" not in sent
+    finally:
+        await client.shutdown()
+
+
+async def test_mock_accounting_non_balanced_resource_only_on_flagged_account():
+    # Количество is a non-balanced resource kept only on accounts with the Количественный flag:
+    # 281 carries real Dr/Cr values; 361 lacks the flag and reads 0, as the platform answers at
+    # account level - the column is present, not omitted.
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    balance = await client.register_balance("Хозрасчетный", {}, table="balance")
+    rows = {r["Account"]["Code"]: r for r in balance["data"]}
+    assert rows["281"]["КоличествоBalanceDr"] == 40.0
+    assert rows["361"]["КоличествоBalanceDr"] == 0
+    assert rows["361"]["КоличествоBalanceCr"] == 0
+    assert all(r["ВалютнаяСуммаBalanceDr"] == 0 and r["ВалютнаяСуммаBalanceCr"] == 0
+               for r in rows.values())
+    assert balance["ext_dimension_types"]["281"] == ["Номенклатура"]
+
+    osv = await client.register_balance("Хозрасчетный", {}, table="balance_and_turnovers",
+                                        date_from="2026-01-01", account=["281"])
+    assert [r["Account"]["Code"] for r in osv["data"]] == ["281"]
+    assert {"КоличествоOpeningBalanceDr", "КоличествоClosingBalanceCr"} <= osv["data"][0].keys()
+
+    explicit = await client.register_balance("Хозрасчетный", {}, table="balance",
+                                             account=["281"], resources=["Количество"])
+    assert explicit["resources"] == ["Количество"]
+    assert explicit["data"][0]["КоличествоBalanceDr"] == 40.0
+
+    drcr = await client.register_balance("Хозрасчетный", {}, table="drcr_turnovers",
+                                         date_from="2026-01-01", account_dr=["281"])
+    assert {"КоличествоTurnoverDr", "КоличествоTurnoverCr", "СуммаTurnover"} \
+        <= drcr["data"][0].keys()
+
+
+async def test_mock_accounting_corr_account_groupby_on_turnovers_only():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    turnovers = await client.register_balance("Хозрасчетный", {}, table="turnovers",
+                                              date_from="2026-01-01", account=["361"],
+                                              corr_account=["701"], groupby=["CorrAccount"])
+    assert turnovers["groupby"] == ["Account", "CorrAccount"]
+    assert turnovers["data"][0]["CorrAccount"]["Code"] == "701"
+    with pytest.raises(ParameterError):
+        await client.register_balance("Хозрасчетный", {}, table="balance",
+                                      groupby=["CorrAccount"])
+
+
+@respx.mock
+async def test_register_balance_sends_corr_account_under_api_name():
+    # The BSL side maps CorrAccount to BalancedAccount in the query text; on the wire it stays
+    # corr_account / groupby=CorrAccount.
+    route = respx.get(url__startswith="http://test/ai/v1/registers/").mock(
+        return_value=httpx.Response(200, json={"metadata": "accountingregister",
+                                               "table": "turnovers", "data": []})
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.register_balance("Хозрасчетный", {}, table="turnovers",
+                                      date_from="2026-01-01", corr_account=["701"],
+                                      groupby=["CorrAccount"])
+        params = route.calls[0].request.url.params
+        assert params["corr_account"] == "701"
+        assert params["groupby"] == "CorrAccount"
+    finally:
+        await client.shutdown()
+
+
 async def test_mock_accounting_records_need_from_or_recorder():
     client = MCBPClient(ConnectionConfig(mock=True))
     await client.startup()

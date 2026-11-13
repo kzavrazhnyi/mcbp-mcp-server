@@ -22,9 +22,9 @@ import logging
 import re
 import time
 import uuid
-from datetime import date
-from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import date
 from typing import Any
 from urllib.parse import quote, unquote, urlencode
 
@@ -1568,6 +1568,24 @@ _ACCOUNTING_SUFFIXES = {
     "drcr_turnovers": ("Turnover",),
 }
 
+# Numeric resources of the mock register: name -> (balanced, accounting flag). A non-balanced
+# resource keeps its own Dr/Cr per account (and Dr/Cr turnovers in drcr_turnovers); a flagged
+# one is kept only on accounts carrying that flag and reads 0 on the other rows (as the platform does).
+_MOCK_ACCOUNTING_RESOURCES = {
+    "Сумма": (True, None),
+    "Количество": (False, "Количественный"),
+    "ВалютнаяСумма": (False, "Валютный"),
+}
+
+# Mock chart of accounts: code -> (description, accounting flags, extdimension kinds).
+_MOCK_ACCOUNTS = {
+    "361": ("Розрахунки з вітчизняними покупцями", frozenset(), ["Контрагенты", "Договоры"]),
+    "281": ("Товари на складі", frozenset({"Количественный"}), ["Номенклатура"]),
+}
+
+_MOCK_PRODUCT = {"Presentation": "Цукор 1 кг", "Data": "e3f1d9b6-0101",
+                 "Metadata": "Номенклатура"}
+
 
 def _is_mock_accounting_register(type_: str) -> bool:
     return type_.casefold() == MOCK_ACCOUNTING_REGISTER.casefold()
@@ -1585,7 +1603,9 @@ _MOCK_COUNTERPARTY = {"Presentation": "Альфа Трейд, ТОВ", "Data": "
 def _mock_accounting_balance(type_: str, params: dict) -> dict:
     """Mirrors the BAS accounting branch of GET /registers/{type}/balance (AccountingBalance):
     explicit English-suffixed amount columns, accounts with Code/Description, the
-    `ext_dimension_types` legend keyed by account code."""
+    `ext_dimension_types` legend keyed by account code. Non-balanced resources are included
+    (`КоличествоBalanceDr`); a column whose accounting flag the account lacks reads 0 - the
+    platform returns 0, not NULL, at account level."""
     table = str(params.get("table") or "balance")
     if table not in _ACCOUNTING_TABLES:
         raise ParameterError(f"Unknown table '{table}' - use one of: "
@@ -1597,39 +1617,75 @@ def _mock_accounting_balance(type_: str, params: dict) -> dict:
     groups = [g.strip() for g in str(params.get("groupby") or "").split(",") if g.strip()]
     if len(groups) > 4:
         raise ParameterError(f"groupby takes at most 4 fields, got {len(groups)}")
-    resources = [r.strip() for r in str(params.get("resources") or "Сумма").split(",")
+    if table != "turnovers" and any(g.casefold() in ("corraccount", "корсчет") for g in groups):
+        raise ParameterError("groupby CorrAccount applies to table=turnovers only")
+    default_resources = ",".join(_MOCK_ACCOUNTING_RESOURCES)
+    resources = [r.strip() for r in str(params.get("resources") or default_resources).split(",")
                  if r.strip()]
-    accounts = ["AccountDr", "AccountCr"] if table == "drcr_turnovers" else ["Account"]
-    row: dict[str, Any] = {}
-    for column in accounts:
-        if column == "AccountCr":
-            row[column] = _mock_account("701", "Дохід від реалізації")
-        else:
-            row[column] = _mock_account("361", "Розрахунки з вітчизняними покупцями")
+    for resource in resources:
+        if resource not in _MOCK_ACCOUNTING_RESOURCES:
+            raise ParameterError(f"Unknown resource '{resource}' for accounting register "
+                                 f"{type_} - numeric resources: "
+                                 + ", ".join(_MOCK_ACCOUNTING_RESOURCES))
+    is_drcr = table == "drcr_turnovers"
+    wanted = str(params.get("account_dr" if is_drcr else "account") or "")
+    wanted_codes = [c.strip() for c in wanted.split(",") if c.strip()]
+    codes = [c for c in _MOCK_ACCOUNTS
+             if not wanted_codes or any(c.startswith(w) for w in wanted_codes)]
+    if is_drcr:
+        codes = codes[:1]
+    accounts = ["AccountDr", "AccountCr"] if is_drcr else ["Account"]
     labels = list(accounts)
     periodicity = None
-    for group in groups:
-        name, _, granularity = group.partition(":")
-        if name in accounts or name == "Account":
-            continue
-        if granularity:
-            periodicity = granularity.lower()
-            row["Period"] = "2026-01-01"
-            labels.append(f"Period:{periodicity}")
-        elif name.startswith("ExtDimension"):
-            row[name] = dict(_MOCK_COUNTERPARTY)
-            labels.append(name)
+    rows: list[dict[str, Any]] = []
+    legend: dict[str, list[str]] = {}
+    for code in codes:
+        description, flags, ext_kinds = _MOCK_ACCOUNTS[code]
+        legend[code] = list(ext_kinds)
+        row: dict[str, Any] = {}
+        if is_drcr:
+            row["AccountDr"] = _mock_account(code, description)
+            cr_code = next((c.strip() for c in str(params.get("account_cr") or "").split(",")
+                            if c.strip()), "701")
+            row["AccountCr"] = _mock_account(cr_code, "Дохід від реалізації" if cr_code == "701"
+                                             else f"<mock-{cr_code}>")
         else:
-            row[name] = {"Presentation": f"<mock-{name}>", "Data": "mock-1", "Metadata": name}
-            labels.append(name)
-    for resource in resources:
-        for suffix in _ACCOUNTING_SUFFIXES[table]:
-            row[resource + suffix] = 1200.0 if suffix.endswith(("Dr", "Turnover")) else 0
+            row["Account"] = _mock_account(code, description)
+        for group in groups:
+            name, _, granularity = group.partition(":")
+            if name in accounts or name == "Account":
+                continue
+            if granularity:
+                periodicity = granularity.lower()
+                row["Period"] = "2026-01-01"
+                label = f"Period:{periodicity}"
+            elif name.casefold() in ("corraccount", "корсчет"):
+                row["CorrAccount"] = _mock_account("701", "Дохід від реалізації")
+                label = "CorrAccount"
+            elif name.startswith("ExtDimension"):
+                row[name] = dict(_MOCK_PRODUCT if ext_kinds[0] == "Номенклатура"
+                                 else _MOCK_COUNTERPARTY)
+                label = name
+            else:
+                row[name] = {"Presentation": f"<mock-{name}>", "Data": "mock-1",
+                             "Metadata": name}
+                label = name
+            if label not in labels:
+                labels.append(label)
+        for resource in resources:
+            balanced, flag = _MOCK_ACCOUNTING_RESOURCES[resource]
+            suffixes = (("TurnoverDr", "TurnoverCr") if is_drcr and not balanced
+                        else _ACCOUNTING_SUFFIXES[table])
+            # Platform behaviour: an account without the flag reads 0, not NULL.
+            amount = (0 if flag and flag not in flags
+                      else 1200.0 if resource == "Сумма" else 40.0)
+            for suffix in suffixes:
+                row[resource + suffix] = amount if suffix.endswith(("Dr", "Turnover")) else 0
+        rows.append(row)
     return {"metadata": "accountingregister", "type": type_, "table": table,
             "from": params.get("from"), "to": params.get("to"), "on": params.get("on"),
             "periodicity": periodicity, "groupby": labels, "resources": resources,
-            "data": [row], "ext_dimension_types": {"361": ["Контрагенты", "Договоры"]},
-            "truncated": False}
+            "data": rows, "ext_dimension_types": legend, "truncated": False}
 
 
 def _mock_accounting_records(type_: str, params: dict) -> dict:
@@ -2975,6 +3031,9 @@ def _mock_accounting_register_detail(type_: str) -> dict:
             {"name": "Сумма", "synonym": "Сума", "types": ["Число"], "digits": 15,
              "fraction_digits": 2, "balance": True, "accounting_flag": None,
              "ext_dimension_accounting_flag": None},
+            {"name": "Количество", "synonym": "Кількість", "types": ["Число"],
+             "digits": 15, "fraction_digits": 3, "balance": False,
+             "accounting_flag": "Количественный", "ext_dimension_accounting_flag": None},
             {"name": "ВалютнаяСумма", "synonym": "Валютна сума", "types": ["Число"],
              "digits": 15, "fraction_digits": 2, "balance": False,
              "accounting_flag": "Валютный", "ext_dimension_accounting_flag": None},

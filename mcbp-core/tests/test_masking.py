@@ -335,6 +335,67 @@ def test_split_chunk_streaming_rehydration():
     assert sr.flush() == ""
 
 
+def _issued(masker: Masker, presentation: str = "Гамма Опт, ТОВ") -> tuple[str, str]:
+    masked = masker.mask({"data": [{"Ref": _ref("Контрагенты", "uuid-7", presentation)}]})
+    pseudo = masked["data"][0]["Ref"]["Presentation"]
+    return pseudo, pseudo.rpartition("·")[2]
+
+
+def test_rehydrate_bare_code_of_issued_pseudonym():
+    masker = Masker(type_classifier=_classifier)
+    pseudo, code = _issued(masker)
+    text = masker.rehydrate_text(f"клієнт {code}, а також {pseudo}.")
+    assert text == "клієнт Гамма Опт, ТОВ, а також Гамма Опт, ТОВ."
+
+
+def test_bare_code_inside_longer_token_or_unissued_stays():
+    masker = Masker(type_classifier=_classifier)
+    _, code = _issued(masker)
+    unissued = "QWERTZ" if code != "QWERTZ" else "ZXCVBN"
+    for text in (f"X{code}", f"{code}9", f"{code}_a", f"Інше·{code}", f"код {unissued} тут"):
+        assert masker.rehydrate_text(text) == text
+
+
+def test_bare_code_shared_by_two_pseudonyms_stays():
+    masker = Masker(type_classifier=_classifier)
+    masker._pseudo_to_original["A·SAMEC0"] = "one"
+    masker._pseudo_to_original["B·SAMEC0"] = "two"
+    assert masker.rehydrate_text("код SAMEC0") == "код SAMEC0"
+    assert masker.rehydrate_text("B·SAMEC0") == "two"
+
+
+def test_all_digit_code_never_matched_bare():
+    masker = Masker(type_classifier=_classifier)
+    masker._pseudo_to_original["A·234567"] = "one"
+    assert masker.rehydrate_text("сума 234567 грн") == "сума 234567 грн"
+
+
+def test_bare_code_split_across_stream_chunks():
+    masker = Masker(type_classifier=_classifier)
+    _, code = _issued(masker)
+    sr = masker.stream_rehydrator()
+    out = sr.feed("сценарій ")
+    out += sr.feed(code[:3])
+    out += sr.feed(code[3:])
+    assert code not in out  # a complete bare code is still held: the token may continue
+    out += sr.feed(" готовий")
+    out += sr.flush()
+    assert out == "сценарій Гамма Опт, ТОВ готовий"
+
+
+def test_bare_code_stream_boundary_uses_previous_chunk():
+    masker = Masker(type_classifier=_classifier)
+    _, code = _issued(masker)
+    sr = masker.stream_rehydrator()
+    out = sr.feed("ABC") + sr.feed(code) + sr.feed("!") + sr.flush()
+    assert out == f"ABC{code}!"
+    sr = masker.stream_rehydrator()
+    out = sr.feed(code) + sr.feed("Z") + sr.flush()
+    assert out == f"{code}Z"
+    sr = masker.stream_rehydrator()
+    assert sr.feed(code) == "" and sr.flush() == "Гамма Опт, ТОВ"
+
+
 # --- Value/enum reference masking (`{"Presentation","Value","Metadata"}`, no `Data`) --
 # Real shape BAS returns for e.g. `ВидКонтрагента`, contact-info `Тип` — captured live
 # against basmbdemo (get_object on a Контрагенты row), trimmed and anonymized here.
@@ -1050,3 +1111,190 @@ def test_accounting_period_bucket_open_while_extdimension_still_masked():
     row = masker.mask(payload)["data"][0]
     assert row["Period"] == "2026-02-01"
     assert row["ExtDimension1"]["Presentation"] != "Альфа Трейд, ТОВ"
+
+
+# --- Dates are open by value shape ---------------------------------------------------
+
+def _register_classifier(name: str) -> str | None:
+    return {"Контрагенты": "Справочник.Контрагенты",
+            "Партнеры": "Справочник.Партнеры"}.get(name)
+
+
+def test_date_values_open_by_shape_in_any_field():
+    masker = Masker(type_classifier=_register_classifier)
+    payload = {"data": [{"Ref": _ref("Партнеры", "p-1", "Альфа"),
+                         "ДатаРегистрации": "2023-06-15T00:00:00",
+                         "ДатаСобытия": "2023-06-15 08:30",
+                         "ДатаДоговора": "15.06.2023",
+                         "ДатаЗаписи": "15.06.2023 9:05:00",
+                         "Наименование": "Альфа"}],
+               "cursor": None}
+    row = masker.mask(payload)["data"][0]
+    assert row["ДатаРегистрации"] == "2023-06-15T00:00:00"
+    assert row["ДатаСобытия"] == "2023-06-15 08:30"
+    assert row["ДатаДоговора"] == "15.06.2023"
+    assert row["ДатаЗаписи"] == "15.06.2023 9:05:00"
+    assert row["Наименование"] != "Альфа"
+
+
+def test_date_lookalike_that_is_not_a_date_stays_masked():
+    masker = Masker()
+    row = masker.mask({"data": [{"Шифр": "2023-13-45", "Код2": "99.99.2023"}],
+                       "cursor": None})["data"][0]
+    assert row["Шифр"] != "2023-13-45"
+    assert row["Код2"] != "99.99.2023"
+
+
+def test_register_records_period_open():
+    masker = Masker()
+    payload = {"metadata": "accountingregister", "type": "Хозрасчетный",
+               "data": [{"Период": "2026-11-01T00:00:00", "Сумма": 10.0,
+                         "Содержание": "Оплата"}],
+               "truncated": False}
+    row = masker.mask(payload)["data"][0]
+    assert row["Период"] == "2026-11-01T00:00:00"
+    assert row["Содержание"] != "Оплата"
+
+
+def test_birth_date_stays_forced_masked():
+    masker = Masker()
+    row = masker.mask({"data": [{"ДатаРождения": "1990-01-02"}], "cursor": None})["data"][0]
+    assert row["ДатаРождения"] != "1990-01-02"
+
+
+def test_date_field_forced_by_policy_override_stays_masked():
+    policy = MaskingPolicy.from_dict({"force_mask_fields": ["ДатаРегистрации"]})
+    masker = Masker(policy=policy, type_classifier=_register_classifier)
+    row = masker.mask({"data": [{"Ref": _ref("Партнеры", "p-1", "Альфа"),
+                                 "ДатаРегистрации": "2023-06-15T00:00:00"}],
+                       "cursor": None})["data"][0]
+    assert row["ДатаРегистрации"] != "2023-06-15T00:00:00"
+
+
+def test_accounting_register_field_rule_masks_period_in_records():
+    # A register row AccountingRegisters/Хозрасчетный/Период Mask=true becomes this per-type rule
+    # (the backend builds the dotted type from _INVENTORY_KIND_PREFIX["accountingregisters"]).
+    from mcbp_core.masking import _INVENTORY_KIND_PREFIX, _KIND_DOTTED_PREFIX
+
+    for kind in ("accountingregisters", "accumulationregisters", "informationregisters",
+                 "documents"):
+        assert kind in _INVENTORY_KIND_PREFIX
+        assert kind[:-1] in _KIND_DOTTED_PREFIX
+    dotted = _INVENTORY_KIND_PREFIX["accountingregisters"] + "Хозрасчетный"
+    policy = MaskingPolicy.from_dict({"force_mask_type_fields": [f"{dotted}.Период"]})
+    masker = Masker(policy=policy)
+    payload = {"metadata": "AccountingRegister", "type": "Хозрасчетный",
+               "data": [{"Период": "2026-11-01T00:00:00", "Сумма": 10.0}],
+               "truncated": False}
+    # The tool hint may name a different register kind; the envelope's own metadata wins.
+    row = masker.mask(payload, type_name="Хозрасчетный",
+                      kind="informationregister")["data"][0]
+    assert row["Период"] != "2026-11-01T00:00:00"
+    assert row["Сумма"] == 10.0
+    # The same rule does not leak onto another register kind with the same name.
+    other = masker.mask({"metadata": "informationregister", "type": "Хозрасчетный",
+                         "data": [{"Период": "2026-11-01T00:00:00"}], "truncated": False})
+    assert other["data"][0]["Период"] == "2026-11-01T00:00:00"
+
+
+def test_masked_date_rehydrates_to_its_original_string_form():
+    policy = MaskingPolicy.from_dict({"force_mask_fields": ["ДатаРегистрации"]})
+    masker = Masker(policy=policy)
+    row = masker.mask({"data": [{"ДатаРегистрации": "2023-06-15T00:00:00"}],
+                       "cursor": None})["data"][0]
+    pseudo = row["ДатаРегистрации"]
+    assert masker.rehydrate_text(f"Дата: {pseudo}.") == "Дата: 2023-06-15T00:00:00."
+    assert masker.unmask_arguments({"f": pseudo}) == {"f": "2023-06-15T00:00:00"}
+
+
+# --- Stream / one-shot equivalence ---------------------------------------------------
+
+def test_bare_code_glued_to_held_prefix_streams_like_one_shot():
+    masker = Masker(type_classifier=_classifier)
+    pseudo, code = _issued(masker)
+    kind = pseudo.rpartition("·")[0]
+    text = f"x {code}{kind[:2]}zz"
+    assert masker.rehydrate_text(text) == text
+    sr = masker.stream_rehydrator()
+    out = sr.feed(f"x {code}{kind[:2]}") + sr.feed("zz") + sr.flush()
+    assert out == text
+
+
+def _stream(masker: Masker, chunks: list[str]) -> str:
+    sr = masker.stream_rehydrator()
+    return "".join(sr.feed(c) for c in chunks) + sr.flush()
+
+
+def test_stream_split_at_every_position_equals_one_shot():
+    masker = Masker(type_classifier=_classifier)
+    pseudo, code = _issued(masker)
+    other = masker.mask({"data": [{"Ref": _ref("Контрагенты", "uuid-8", "Дельта")}]})
+    pseudo2 = other["data"][0]["Ref"]["Presentation"]
+    kind = pseudo.rpartition("·")[0]
+    texts = [
+        f"x {code}{kind[:2]}zz",
+        f"клієнт {code}, а також {pseudo}.",
+        f"{code} {pseudo2}{code} ({code})",
+        f"X{code} {code}9 {kind}·{code}X {pseudo}{pseudo2}",
+        f"{kind[:3]} {code[:3]} {code}",
+        f"{pseudo}",
+        f"{code}",
+    ]
+    for text in texts:
+        expected = masker.rehydrate_text(text)
+        for i in range(len(text) + 1):
+            assert _stream(masker, [text[:i], text[i:]]) == expected, (text, i)
+            for j in range(i, len(text) + 1):
+                got = _stream(masker, [text[:i], text[i:j], text[j:]])
+                assert got == expected, (text, i, j)
+        assert _stream(masker, list(text)) == expected, text
+
+
+# --- Whole-type Mask and birthday field names ------------------------------------
+
+def _employee_classifier(name: str) -> str | None:
+    return {"Сотрудники": "Справочник.Сотрудники"}.get(name)
+
+
+def _employee_payload() -> dict:
+    return {"data": [{"Ref": _ref("Сотрудники", "e-1", "Іваненко"),
+                      "ДеньРождения": "1990-01-02",
+                      "ДатаПриема": "2020-03-01T00:00:00"}],
+            "cursor": None}
+
+
+def test_birthday_field_names_forced_masked():
+    masker = Masker()
+    for name in ("ДеньРождения", "ДеньНародження", "ДатаРожденияРебенка", "Народження"):
+        row = masker.mask({"data": [{name: "1990-01-02"}], "cursor": None})["data"][0]
+        assert row[name] != "1990-01-02", name
+
+
+def test_whole_type_mask_masks_dates_too():
+    policy = MaskingPolicy.from_dict({"mask_type_exact": ["Справочник.Сотрудники"]})
+    masker = Masker(policy=policy, type_classifier=_employee_classifier)
+    row = masker.mask(_employee_payload())["data"][0]
+    assert row["ДеньРождения"] != "1990-01-02"
+    assert row["ДатаПриема"] != "2020-03-01T00:00:00"
+    assert masker.rehydrate_text(row["ДатаПриема"]) == "2020-03-01T00:00:00"
+
+
+def test_type_without_whole_mask_keeps_dates_open():
+    masker = Masker(type_classifier=_employee_classifier)
+    row = masker.mask(_employee_payload())["data"][0]
+    assert row["ДеньРождения"] != "1990-01-02"
+    assert row["ДатаПриема"] == "2020-03-01T00:00:00"
+
+
+# --- set_policy ------------------------------------------------------------------
+
+def test_set_policy_keeps_issued_pseudonyms():
+    masker = Masker(type_classifier=_employee_classifier)
+    first = masker.mask(_employee_payload())["data"][0]
+    pseudo = first["Ref"]["Presentation"]
+    masker.set_policy(MaskingPolicy.from_dict({"allow_plain_fields": ["ДатаПриема"]}))
+    second = masker.mask(_employee_payload())["data"][0]
+    assert second["Ref"]["Presentation"] == pseudo
+    assert second["ДеньРождения"] == first["ДеньРождения"]
+    assert masker.rehydrate_text(f"{pseudo}.") == "Іваненко."
+    assert masker.unmask_arguments({"id": pseudo}) == {"id": "e-1"}
