@@ -345,7 +345,10 @@ TOOLS: dict[str, ToolSpec] = {
         "КОНКРЕТНОГО контрагента (чи за іншим посилальним полем), спершу знайди його ref через "
         "search_catalog/filter_catalog, потім передай `filters`, напр. {\"Контрагент\": "
         "\"<uuid>\"} (значення — UUID з Ref.Data; для складеного типу — \"ІмяТипу:UUID\"). Імена "
-        "полів бери з describe_metadata, не вгадуй. `fields` лише ДОДАЄ вказані реквізити шапки "
+        "полів бери з describe_metadata, не вгадуй. Presentation посилання («… № 15 від …») чи "
+        "номер із нього — текст, НЕ ключ фільтра: реальний Number буває з префіксом/нулями. "
+        "Знайдений документ відкривай get_object за посиланням (type=Metadata, id=Data); маючи "
+        "лише номер — LIKE, напр. {\"Номер\": \"%15\"}, і звір Date. `fields` лише ДОДАЄ вказані реквізити шапки "
         "до стандартного набору (напр. [\"Контрагент\", \"СуммаДокумента\"]) — не звужує "
         "вибірку; невідоме ім'я поля потрапляє в `unknown_fields` відповіді, а не в помилку. "
         "Порожнє поле у списку НЕ означає, що реквізит порожній у базі. Для повних даних і "
@@ -402,7 +405,10 @@ TOOLS: dict[str, ToolSpec] = {
             "field), first find its ref via search_catalog/filter_catalog, then pass `filters`, "
             "e.g. {\"Контрагент\": \"<uuid>\"} (the value is the UUID from Ref.Data; for a "
             "composite type — \"TypeName:UUID\"). Take field names from describe_metadata, "
-            "don't guess. `fields` only ADDS the named header attributes to the standard set "
+            "don't guess. A reference's Presentation («… № 15 від …») or a number parsed from "
+            "it is display text, NOT a filter key: the real Number may be padded/prefixed. Open "
+            "a found document with get_object by its reference (type=Metadata, id=Data); with "
+            "only a number use LIKE, e.g. {\"Номер\": \"%15\"}, and check Date. `fields` only ADDS the named header attributes to the standard set "
             "(e.g. [\"Контрагент\", \"СуммаДокумента\"]) — it never narrows the selection; an "
             "unknown field name lands in the response's `unknown_fields`, not in an error. An "
             "empty field in a list row does NOT mean the attribute is empty in the base. For "
@@ -665,15 +671,18 @@ TOOLS: dict[str, ToolSpec] = {
         "реквізити + табличні частини). Списки (search_catalog/filter_catalog/get_documents) і "
         "структурні інструменти (describe_metadata/get_schema/list_metadata) НЕ містять значень "
         "реквізитів — не роби висновок «поле порожнє» доти, доки не перевірив саме тут. "
-        "Виклич після того, як список знайшов потрібний запис — передай його id (UUID з поля "
-        "Ref.Data у рядку списку). Великі документи: передай `tabular_sections` (імена з "
+        "Відкриває БУДЬ-ЯКЕ посилання {Presentation, Data, Metadata} з результату — Ref рядка "
+        "списку, Recorder/Регистратор, документ у рядку регістру, рядок табличної частини, "
+        "реквізит: type=<Metadata>, id=<Data>; metadata=Documents для Recorder чи «… № … від "
+        "…», інакше Catalogs (NOT_FOUND — вид Metadata дізнайся з list_metadata/describe_metadata). Presentation — лише текст, НЕ шукай за ним списком. Великі документи: передай `tabular_sections` (імена з "
         "describe_metadata; [] — без табличних частин) і `rows_limit` (типово 200 рядків на "
         "частину); `tabular_section_counts` у відповіді показує повний розмір кожної частини — "
         "решту гортай через `offset`.",
         _params(
             {"metadata": {"type": "string", "description": "Вид: Catalogs, Documents, Tasks, ..."},
-             "type": {"type": "string", "description": "Тип об'єкта, напр. Контрагенты, ЗаказПокупателя"},
-             "id": {"type": "string", "description": "UUID об'єкта (Ref.Data зі списку)"},
+             "type": {"type": "string",
+                      "description": "Тип об'єкта, напр. Контрагенты; у посилання — його Metadata"},
+             "id": {"type": "string", "description": "UUID: Data посилання (Ref.Data чи інше поле)"},
              "fields": {"type": "array", "items": {"type": "string"},
                         "description": "Лише ці реквізити шапки (стандартні — Ref, Code/Number, "
                                        "Description/Date… — є завжди); без поля — усі"},
@@ -693,8 +702,11 @@ TOOLS: dict[str, ToolSpec] = {
             "attributes + tabular sections). Lists (search_catalog/filter_catalog/get_documents) "
             "and structure tools (describe_metadata/get_schema/list_metadata) do NOT contain "
             "attribute values — never conclude 'the field is empty' until you've checked here. "
-            "Call it after a list has found the record you need — pass its id (the UUID from "
-            "the list row's Ref.Data field). Large documents: pass `tabular_sections` (names "
+            "Opens ANY reference {Presentation, Data, Metadata} found in a result — a list "
+            "row's Ref, Recorder/Регистратор, a document in a register row, a tabular-section "
+            "line, an attribute: type=<Metadata>, id=<Data>; metadata=Documents for a Recorder "
+            "or a «… № … від …» presentation, else Catalogs (on NOT_FOUND find the kind of Metadata via list_metadata/describe_metadata). Presentation is display text only "
+            "— never re-search a list by it. Large documents: pass `tabular_sections` (names "
             "from describe_metadata; [] — no tabular sections) and `rows_limit` (default 200 "
             "rows per section); `tabular_section_counts` in the response shows the full size of "
             "each section — page through the rest with `offset`."
