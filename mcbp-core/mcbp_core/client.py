@@ -82,6 +82,8 @@ _ERROR_CODE_MAP: dict[str, type[MCBPError]] = {
 }
 
 
+_KEPT_CODES = frozenset({"FTS_DISABLED", "FTS_ERROR"})
+
 log = logging.getLogger("mcbp.api")
 
 # Retry only idempotent methods: a POST (create_object/push_ai_context) writes through MCBP
@@ -106,7 +108,10 @@ def _typed_error_from_body(text: str) -> Exception | None:
     if not isinstance(error, dict) or "code" not in error:
         return None
     message = error.get("message") or text[:300]
-    return _ERROR_CODE_MAP.get(error["code"], UpstreamError)(message)
+    code = error["code"]
+    if code in _KEPT_CODES:  # no dedicated class, but the model/caller branches on the code
+        return UpstreamError(message, code=code)
+    return _ERROR_CODE_MAP.get(code, UpstreamError)(message)
 
 
 @dataclass
@@ -361,6 +366,10 @@ class MetadataCache:
         return {"entries": len(self._entries), "hits": self._hits, "misses": self._misses}
 
 
+class _RouteNotFoundError(NotFoundError):
+    """404 without the MCBP_AI error envelope (the platform has no URL template)."""
+
+
 class MCBPClient:
     def __init__(self, config: ConnectionConfig, metadata_cache: MetadataCache | None = None):
         self._cfg = config
@@ -486,7 +495,7 @@ class MCBPClient:
             # Body doesn't match the {"error":{"code",...}} envelope — fall back to the
             # status-code-only classification (unchanged from before).
             if resp.status_code == 404:
-                raise NotFoundError(bare_path)
+                raise _RouteNotFoundError(bare_path)
             if resp.status_code in (401, 403):
                 raise AuthError(f"BAS rejected credentials ({resp.status_code}): {resp.text[:200]}")
             raise UpstreamError(f"BAS returned {resp.status_code}: {resp.text[:300]}")
@@ -524,7 +533,7 @@ class MCBPClient:
         return result
 
     async def list_catalog(self, type_: str, cursor: str | None, limit: int, q: str | None,
-                           fields: list | str | None = None) -> dict:
+                           fields: list | str | None = None, only: bool = False) -> dict:
         params: dict[str, Any] = {"limit": limit}
         if cursor:
             params["cursor"] = cursor
@@ -532,13 +541,15 @@ class MCBPClient:
             params["q"] = q
         if fields:
             params["fields"] = ",".join(fields) if isinstance(fields, list) else fields
+        if only:
+            params["only"] = "true"
         return await self._request("GET", f"/ai/v1/catalogs/{type_}", params=params)
 
     async def filter_catalog(self, type_: str, filters: dict | None, orderby: str | None,
                              desc: bool, exclude_groups: bool, limit: int,
                              cursor: str | None = None, fields: list | str | None = None,
                              agg: list[str] | str | None = None,
-                             groupby: str | None = None) -> dict:
+                             groupby: str | None = None, only: bool = False) -> dict:
         """Server-side filter by ANY field (+optional sort / group-exclusion). Field names
         are the real metadata names (from describe_metadata); filtering/typing happens in BAS.
         Reference fields are filtered by passing the object's Ref UUID as the value.
@@ -564,6 +575,8 @@ class MCBPClient:
             params["agg"] = ",".join(agg) if isinstance(agg, list) else agg
         if groupby:
             params["groupby"] = groupby
+        if only:
+            params["only"] = "true"
         return await self._request("GET", f"/ai/v1/catalogs/{type_}", params=params)
 
     async def list_documents(self, type_: str, frm: str | None, to: str | None,
@@ -571,8 +584,9 @@ class MCBPClient:
                              filters: dict | None = None, fields: list | str | None = None,
                              orderby: str | None = None, desc: bool = False,
                              agg: list[str] | str | None = None,
-                             groupby: str | None = None) -> dict:
-        """Documents of a type over a period, with optional server-side field filters
+                             groupby: str | None = None, q: str | None = None,
+                             only: bool = False) -> dict:
+        """Documents of a type over a period (`q`: Number search, MCBP_AI >= 1.0.41.6), with optional server-side field filters
         (incl. reference fields, e.g. {"Контрагент": "<uuid>"}) and extra header fields
         returned in each row (e.g. ["Контрагент", "СуммаДокумента"]).
         `orderby`/`desc` sort server-side (e.g. by "Дата"); without `orderby` row order is
@@ -592,6 +606,8 @@ class MCBPClient:
         params["to"] = to if to else "3999-12-31"
         if cursor:
             params["cursor"] = cursor
+        if q:
+            params["q"] = q
         for k, v in (filters or {}).items():
             params[f"f.{k}"] = v  # 'f.' prefix keeps filters separate from reserved params
         if fields:
@@ -604,6 +620,8 @@ class MCBPClient:
             params["agg"] = ",".join(agg) if isinstance(agg, list) else agg
         if groupby:
             params["groupby"] = groupby
+        if only:
+            params["only"] = "true"
         return await self._request("GET", f"/ai/v1/documents/{type_}", params=params)
 
     async def document_schema(self, type_: str) -> dict:
@@ -704,7 +722,8 @@ class MCBPClient:
                                date_to: str | None = None, filters: dict | None = None,
                                orderby: str | None = None, desc: bool = False,
                                limit: int | None = None, agg: list[str] | str | None = None,
-                               groupby: list[str] | str | None = None) -> dict:
+                               groupby: list[str] | str | None = None,
+                               fields: list[str] | str | None = None) -> dict:
         """Raw rows of an information register (no Ref — this is the ONLY route that can read
         them) or, for an accumulation register, raw movements (unlike `register_balance`'s
         computed balance). `date_from`/`date_to` are BOTH optional — an open bound when
@@ -743,6 +762,8 @@ class MCBPClient:
             params["agg"] = _csv(agg)
         if groupby:
             params["groupby"] = _csv(groupby)
+        if fields:
+            params["fields"] = _csv(fields)
         result = await self._request("GET", f"/ai/v1/registers/{type_}/records", params=params)
         if agg and isinstance(result, dict) and "aggregates" not in result and "data" in result:
             raise ParameterError(
@@ -1138,7 +1159,8 @@ class MCBPClient:
     async def get_object(self, kind: str, type_: str, object_id: str,
                          fields: list[str] | str | None = None,
                          sections: list[str] | str | None = None,
-                         rows: int | None = None, offset: int | None = None) -> dict:
+                         rows: int | None = None, offset: int | None = None,
+                         additional: bool | None = None, only: bool = False) -> dict:
         """Data of one object (attributes + tabular sections) by its Ref UUID.
         Lists return only standard fields; this is the drill-down for a specific record.
 
@@ -1156,11 +1178,59 @@ class MCBPClient:
             params["rows"] = rows
         if offset:
             params["offset"] = offset
+        selectors = bool(params)
+        if only:  # narrows on the module (needs `fields`); sections then default to none
+            params["only"] = "true"
+        if additional is not None:  # default: shown unless `only`
+            params["additional"] = "true" if additional else "false"
         result = await self._request("GET", f"/ai/v1/object/{kind}/{type_}/{object_id}",
                                      params=params or None)
-        if params and isinstance(result, dict) and "tabular_section_counts" not in result:
+        if selectors and isinstance(result, dict) and "tabular_section_counts" not in result:
             result = _select_object_view(result, fields, sections, rows, offset)
         return result
+
+    async def full_text_search(self, text: str, limit: int | None = None,
+                               metadata: list[str] | str | None = None) -> dict:
+        """Full-text search over the whole infobase (platform FTS index), MCBP_AI >= 1.0.41.6.
+        Rows: type ("Catalog.X"), ref, presentation, description; plus total/count/truncated.
+        Errors by envelope code: FTS_DISABLED, BAD_PARAMETER, FTS_ERROR. An older module ignores
+        `fts` and returns the metadata list: detected by the missing `query` key."""
+        params: dict[str, Any] = {"fts": text}
+        if limit:
+            params["limit"] = limit
+        if metadata:
+            params["metadata"] = _csv(metadata)
+        result = await self._request("GET", "/ai/v1/metadata/all", params=params)
+        if not isinstance(result, dict) or "query" not in result or "index_up_to_date" not in result:
+            raise UpstreamError("full-text search is unsupported - the MCBP_AI module on this "
+                                "base is older than 1.0.41.6, update it")
+        return result
+
+    async def related_documents(self, kind: str, type_: str, object_id: str,
+                                documents: list[str] | str | None = None,
+                                sources: str | None = None, limit: int | None = None) -> dict:
+        """Documents that reference one object (where-used), MCBP_AI >= 1.0.41.6.
+        Rows: type, ref, number, date, deleted, found_in; plus `truncated`, `scanned_sources`
+        and `failed_sources`. `documents` narrows the scan to those document types.
+        A route-level 404 (not the {"error"} envelope) means the module predates the route."""
+        params: dict[str, Any] = {}
+        if documents:
+            params["documents"] = _csv(documents)
+        if sources:
+            params["sources"] = sources
+        if limit:
+            params["limit"] = limit
+        try:
+            return await self._request("GET", f"/ai/v1/related/{kind}/"
+                                       f"{quote(type_, safe='')}/{quote(object_id, safe='')}",
+                                       params=params or None)
+        except NotFoundError as exc:
+            if not isinstance(exc, _RouteNotFoundError):
+                raise  # 404 with the MCBP_AI error envelope: a real answer, pass through
+            raise NotFoundError(
+                "related documents route is missing - the MCBP_AI module on this base is older "
+                "than 1.0.41.6, update it", code=exc.code, http_status=exc.http_status,
+            ) from exc
 
     async def patch_object(self, kind: str, type_: str, object_id: str, fields: dict) -> dict:
         """Natively writes the named header attributes and tabular sections of one object — no
@@ -1560,6 +1630,9 @@ MOCK_ACCOUNTING_REGISTER = "Хозрасчетный"
 _ACCOUNTING_BALANCE_PARAMS = frozenset({"table", "from", "to", "account", "corr_account",
                                         "account_dr", "account_cr", "groupby", "resources",
                                         "limit"})
+
+# Accounting-only subset: table/from/to/groupby/resources/limit also work on accumulation registers.
+_ACCOUNTING_ONLY_PARAMS = frozenset({"account", "corr_account", "account_dr", "account_cr"})
 
 _ACCOUNTING_TABLES = ("balance", "turnovers", "balance_and_turnovers", "drcr_turnovers")
 
@@ -2807,6 +2880,22 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return _mock_bug_status(path, kw)
     if method == "POST" and path.startswith("ai/v1/exchange/"):
         return _mock_exchange(path.rstrip("/").rsplit("/", 1)[-1], kw.get("json"))
+    if path.startswith("ai/v1/related/"):
+        kind, type_, object_id = path.rstrip("/").split("/")[-3:]
+        return {"metadata": kind.lower(), "type": type_, "id": object_id,
+                "data": [{"type": "ЗаказПокупателя", "ref": {"Presentation": "ЗП-00001",
+                          "Data": "doc-0001", "Metadata": "ЗаказПокупателя"},
+                          "number": "ЗП-00001", "date": "2026-05-04T00:00:00", "deleted": False,
+                          "found_in": "Контрагент"}],
+                "truncated": False, "scanned_sources": 12}
+    if path.startswith("ai/v1/metadata/all") and (kw.get("params") or {}).get("fts"):
+        text = str(kw["params"]["fts"])
+        return {"query": text, "index_up_to_date": True, "index_updated": False,
+                "metadata_filter_applied": None, "total": 1, "count": 1, "truncated": False,
+                "data": [{"type": "Catalog.Контрагенты",
+                          "ref": {"Presentation": "Мок контрагент", "Data": "mock-0001",
+                                  "Metadata": "Контрагенты"},
+                          "presentation": "Мок контрагент", "description": text}]}
     if "/metadata/" in path:
         return _mock_metadata(path)
     if method == "PATCH" and "ai/v1/object/" in path:
@@ -2906,12 +2995,19 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
             return _mock_accounting_balance(register, params)
         # Accumulation register, as in BSL RegisterBalance: a lone table=balance is what it
         # computes anyway; any other accounting parameter is a mix-up of the two kinds.
-        mixed = [key for key in params if key in _ACCOUNTING_BALANCE_PARAMS
-                 and not (key == "table" and params[key] == "balance")]
+        mixed = [key for key in params if key in _ACCOUNTING_ONLY_PARAMS]
         if mixed:
             raise ParameterError(f"'{mixed[0]}' applies to accounting registers only - "
                                  f"{register} is an accumulation register")
-        return {"type": register, "data": {"balance": 6200.0, "currency": "UAH"}}
+        table = params.get("table", "balance")
+        if table == "balance":
+            return {"type": register, "data": {"balance": 6200.0, "currency": "UAH"}}
+        if table not in ("turnovers", "balance_and_turnovers"):
+            raise ParameterError(f"table '{table}' is not available for accumulation registers")
+        if not params.get("from"):
+            raise ParameterError("'from' is required for table=" + table)
+        return {"type": register, "table": table, "truncated": False,
+                "data": [{"Period": params["from"], "receipt": 100.0, "expense": 40.0}]}
     if method == "POST" and "/registers/" in path and path.endswith("/records"):
         body = kw.get("json") or {}
         changed = [{"field": k, "old": None, "new": v} for k, v in body.items()]

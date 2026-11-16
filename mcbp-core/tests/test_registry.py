@@ -205,3 +205,18 @@ def test_register_balance_schema_has_accounting_arguments():
     assert TOOLS["get_register_balance"].parameters["required"] == ["type"]
     TOOLS["get_register_balance"].validate_arguments(
         {"type": "Хозрасчетный", "table": "balance", "account": ["361"]})
+
+
+def test_module_1_0_41_6_parameters():
+    assert "q" in TOOLS["get_documents"].parameters["properties"]
+    assert "additional" in TOOLS["get_object"].parameters["properties"]
+    assert "fields" in TOOLS["get_register_records"].parameters["properties"]
+    rel = TOOLS["get_related_documents"]
+    assert rel.read_only and rel.parameters["required"] == ["metadata", "type", "id"]
+    assert rel.parameters["properties"]["limit"]["maximum"] == 50
+    assert rel.parameters["properties"]["sources"]["enum"] == ["documents", "registers", "all"]
+
+
+def test_only_flag_in_list_and_object_schemas():
+    for name in ("search_catalog", "filter_catalog", "get_documents", "get_object"):
+        assert TOOLS[name].parameters["properties"]["only"]["type"] == "boolean", name

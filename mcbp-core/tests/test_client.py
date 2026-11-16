@@ -1328,5 +1328,176 @@ async def test_mock_accumulation_balance_accepts_lone_table_balance_only():
     result = await client.register_balance("ТоварыНаСкладах", {}, table="balance")
     assert result["type"] == "ТоварыНаСкладах"
     with pytest.raises(ParameterError) as exc_info:
-        await client.register_balance("ТоварыНаСкладах", {}, table="balance", limit=50)
+        await client.register_balance("ТоварыНаСкладах", {}, table="balance", account=["361"])
     assert "accounting registers only" in str(exc_info.value)
+
+
+async def test_mock_accumulation_turnovers_need_from():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    result = await client.register_balance("ТоварыНаСкладах", {}, table="turnovers",
+                                           date_from="2026-01-01", groupby=["Period:month"],
+                                           limit=10)
+    assert result["table"] == "turnovers"
+    with pytest.raises(ParameterError):
+        await client.register_balance("ТоварыНаСкладах", {}, table="turnovers")
+
+
+@respx.mock
+async def test_list_documents_sends_q():
+    route = respx.get(url__startswith="http://test/ai/v1/documents/X").mock(
+        return_value=httpx.Response(200, json={"data": [], "cursor": None}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.list_documents("X", "2000-01-01", None, None, 10, q="15")
+        assert route.calls.last.request.url.params["q"] == "15"
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_related_documents_params_and_old_module_404():
+    ok = respx.get(url__startswith="http://test/ai/v1/related/Catalogs/Partners/u-1").mock(
+        return_value=httpx.Response(200, json={"data": [], "truncated": False}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.related_documents("Catalogs", "Partners", "u-1",
+                                       documents=["A", "B"], sources="documents", limit=5)
+        q = ok.calls.last.request.url.params
+        assert (q["documents"], q["sources"], q["limit"]) == ("A,B", "documents", "5")
+        respx.get(url__startswith="http://test/ai/v1/related/").mock(
+            return_value=httpx.Response(404, text="<html>no route</html>"))
+        with pytest.raises(NotFoundError) as exc_info:
+            await client.related_documents("Catalogs", "X", "u-2")
+        assert "older than 1.0.41.6" in str(exc_info.value)
+        respx.get(url__startswith="http://test/ai/v1/related/").mock(
+            return_value=httpx.Response(404, json={"error": {
+                "code": "NOT_FOUND", "message": "Object X u-3 not found"}}))
+        with pytest.raises(NotFoundError) as exc_info:
+            await client.related_documents("Catalogs", "X", "u-3")
+        assert "older" not in str(exc_info.value)
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_get_object_additional_false_and_fields_for_records():
+    obj = respx.get(url__startswith="http://test/ai/v1/object/Catalogs/X/u-1").mock(
+        return_value=httpx.Response(200, json={"data": {}}))
+    rec = respx.get(url__startswith="http://test/ai/v1/registers/R/records").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.get_object("Catalogs", "X", "u-1", additional=False)
+        assert obj.calls.last.request.url.params["additional"] == "false"
+        await client.register_records("R", fields=["A", "B"])
+        assert rec.calls.last.request.url.params["fields"] == "A,B"
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_only_flag_sent_on_lists_and_object():
+    cat = respx.get(url__startswith="http://test/ai/v1/catalogs/X").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    doc = respx.get(url__startswith="http://test/ai/v1/documents/X").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    obj = respx.get(url__startswith="http://test/ai/v1/object/Catalogs/X/u-1").mock(
+        return_value=httpx.Response(200, json={"data": {}, "tabular_section_counts": {}}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.list_catalog("X", None, 5, None, fields=["A"], only=True)
+        assert cat.calls.last.request.url.params["only"] == "true"
+        await client.filter_catalog("X", None, None, False, False, 5, fields=["A"], only=True)
+        assert cat.calls.last.request.url.params["only"] == "true"
+        await client.list_documents("X", "2000-01-01", None, None, 5, fields=["A"], only=True)
+        assert doc.calls.last.request.url.params["only"] == "true"
+        await client.get_object("Catalogs", "X", "u-1", fields=["A"], only=True, additional=True)
+        q = obj.calls.last.request.url.params
+        assert q["only"] == "true" and q["additional"] == "true"
+        await client.list_catalog("X", None, 5, None)
+        assert "only" not in cat.calls.last.request.url.params
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_related_documents_404_envelope_passes_through_without_envelope_is_old_module():
+    client = _live_client()
+    await client.startup()
+    try:
+        # Envelope 404 whose text has no "not found": still a real answer, not "old module".
+        respx.get(url__startswith="http://test/ai/v1/related/").mock(
+            return_value=httpx.Response(404, json={"error": {
+                "code": "NOT_FOUND", "message": "Объект не найден"}}))
+        with pytest.raises(NotFoundError) as exc_info:
+            await client.related_documents("Catalogs", "X", "u-1")
+        assert "older" not in str(exc_info.value)
+        assert "Объект не найден" in str(exc_info.value)
+        # Platform "no URL template": no envelope, whatever the text says.
+        respx.get(url__startswith="http://test/ai/v1/related/").mock(
+            return_value=httpx.Response(404, text="Resource not found"))
+        with pytest.raises(NotFoundError) as exc_info:
+            await client.related_documents("Catalogs", "X", "u-2")
+        assert "older than 1.0.41.6" in str(exc_info.value)
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_related_documents_path_encodes_cyrillic_type_and_reserved_id():
+    route = respx.get(url__startswith="http://test/ai/v1/related/").mock(
+        return_value=httpx.Response(200, json={"data": []}))
+    client = _live_client()
+    await client.startup()
+    try:
+        await client.related_documents("Catalogs", "Контрагенты", "a/b?c#d e")
+        raw = route.calls.last.request.url.raw_path.decode()
+        assert raw == ("/ai/v1/related/Catalogs/%D0%9A%D0%BE%D0%BD%D1%82%D1%80%D0%B0%D0%B3"
+                       "%D0%B5%D0%BD%D1%82%D1%8B/a%2Fb%3Fc%23d%20e")
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_full_text_search_params_and_errors():
+    ok = respx.get(url__startswith="http://test/ai/v1/metadata/all").mock(
+        return_value=httpx.Response(200, json={
+            "query": "ромашка ТОВ", "index_up_to_date": True, "index_updated": False,
+            "metadata_filter_applied": None, "total": 0, "count": 0, "truncated": False,
+            "data": []}))
+    client = _live_client()
+    await client.startup()
+    try:
+        res = await client.full_text_search("ромашка ТОВ", limit=5,
+                                            metadata=["Catalog.X", "Document.Y"])
+        assert res["count"] == 0
+        url = str(ok.calls.last.request.url)
+        assert "fts=%D1%80" in url and "%20" in url and "+" not in url.split("?", 1)[1]
+        q = ok.calls.last.request.url.params
+        assert (q["limit"], q["metadata"]) == ("5", "Catalog.X,Document.Y")
+        # Old module ignores fts and returns the metadata list.
+        respx.get(url__startswith="http://test/ai/v1/metadata/all").mock(
+            return_value=httpx.Response(200, json={"catalogs": []}))
+        with pytest.raises(UpstreamError) as exc_info:
+            await client.full_text_search("x")
+        assert "older than 1.0.41.6" in str(exc_info.value)
+        for status in (400, 422):
+            respx.get(url__startswith="http://test/ai/v1/metadata/all").mock(
+                return_value=httpx.Response(status, json={"error": {
+                    "code": "FTS_DISABLED", "message": "full-text search is disabled"}}))
+            with pytest.raises(UpstreamError) as exc_info:
+                await client.full_text_search("x")
+            assert exc_info.value.code == "FTS_DISABLED"
+    finally:
+        await client.shutdown()
+
+
+async def test_full_text_search_mock_mode():
+    client = MCBPClient(ConnectionConfig(mock=True))
+    res = await client.full_text_search("абв")
+    assert res["query"] == "абв" and res["data"][0]["type"].startswith("Catalog.")

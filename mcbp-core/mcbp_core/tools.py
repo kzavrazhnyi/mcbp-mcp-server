@@ -63,11 +63,16 @@ _PROJECT_REF = {"type": "string",
                                "\"\" очищає"}
 
 
+def _extra(a: dict, *names: str) -> dict:
+    """Optional newer-module arguments, forwarded only when the model passed them."""
+    return {n: a[n] for n in names if a.get(n) is not None}
+
+
 # --- Executors (kwargs only — the client's parameter order is NOT a contract) ---
 async def _search_catalog(c: MCBPClient, a: dict) -> Any:
     return await c.list_catalog(
         type_=a["type"], cursor=a.get("cursor"), limit=a.get("limit", 50),
-        q=a.get("q"), fields=a.get("fields"),
+        q=a.get("q"), fields=a.get("fields"), **_extra(a, "only"),
     )
 
 
@@ -77,7 +82,7 @@ async def _get_documents(c: MCBPClient, a: dict) -> Any:
         cursor=a.get("cursor"), limit=a.get("limit", 100),
         filters=a.get("filters"), fields=a.get("fields"),
         orderby=a.get("orderby"), desc=bool(a.get("desc", False)),
-        agg=a.get("agg"), groupby=a.get("groupby"),
+        agg=a.get("agg"), groupby=a.get("groupby"), **_extra(a, "q", "only"),
     )
 
 
@@ -123,6 +128,18 @@ async def _register_records(c: MCBPClient, a: dict) -> Any:
         type_=a["type"], date_from=a.get("from"), date_to=a.get("to"),
         filters=a.get("filters"), orderby=a.get("orderby"), desc=bool(a.get("desc", False)),
         limit=a.get("limit", 100), agg=a.get("agg"), groupby=a.get("groupby"),
+        **_extra(a, "fields"),
+    )
+
+
+async def _full_text_search(c: MCBPClient, a: dict) -> Any:
+    return await c.full_text_search(a["text"], limit=a.get("limit"), metadata=a.get("metadata"))
+
+
+async def _related_documents(c: MCBPClient, a: dict) -> Any:
+    return await c.related_documents(
+        kind=a["metadata"], type_=a["type"], object_id=a["id"], documents=a.get("documents"),
+        sources=a.get("sources"), limit=a.get("limit"),
     )
 
 
@@ -139,7 +156,7 @@ async def _filter_catalog(c: MCBPClient, a: dict) -> Any:
         type_=a["type"], filters=a.get("filters") or {}, orderby=a.get("orderby"),
         desc=bool(a.get("desc", False)), exclude_groups=bool(a.get("exclude_groups", False)),
         limit=a.get("limit", 100), cursor=a.get("cursor"), fields=a.get("fields"),
-        agg=a.get("agg"), groupby=a.get("groupby"),
+        agg=a.get("agg"), groupby=a.get("groupby"), **_extra(a, "only"),
     )
 
 
@@ -163,7 +180,7 @@ async def _get_object(c: MCBPClient, a: dict) -> Any:
     return await c.get_object(
         kind=a["metadata"], type_=a["type"], object_id=a["id"], fields=a.get("fields"),
         sections=a.get("tabular_sections"), rows=a.get("rows_limit", _OBJECT_ROWS_DEFAULT),
-        offset=a.get("offset"),
+        offset=a.get("offset"), **_extra(a, "additional", "only"),
     )
 
 
@@ -315,9 +332,10 @@ TOOLS: dict[str, ToolSpec] = {
         "agg=[\"count\"] і exclude_groups=true.",
         _params(
             {"type": {"type": "string", "description": "Тип довідника, напр. Контрагенты, Номенклатура"},
-             "q": {"type": "string", "description": "Текст пошуку за назвою/кодом"},
+             "q": {"type": "string", "description": "Search by name/code; digits also match the code without leading zeros (module ≥ 1.0.41.6)"},
              "fields": {"type": "array", "items": {"type": "string"},
                         "description": "Додаткові реквізити у рядках, напр. [\"Покупатель\",\"КодПоЕДРПОУ\"]"},
+             "only": {"type": "boolean", "description": "With fields: return only those columns; unknown name gives 422 (module ≥ 1.0.41.6)"},
              "limit": {"type": "integer", "default": 50},
              "cursor": {"type": "string"}},
             ["type"],
@@ -336,7 +354,7 @@ TOOLS: dict[str, ToolSpec] = {
         )),
     "get_documents": ToolSpec(
         "get_documents",
-        "Повертає документи BAS заданого типу за період. Дати у форматі YYYY-MM-DD. "
+        "Повертає документи BAS заданого типу за період. "
         "`from` ОБОВ'ЯЗКОВИЙ — без нього сервіс відповідає 422. Якщо користувач не назвав "
         "період, бери ЗАВІДОМО ШИРОКИЙ (from=\"2000-01-01\"), а не останній рік: вузьке вікно "
         "мовчки відрізає документи, і «скільки всього» виходить неправильним. "
@@ -345,24 +363,22 @@ TOOLS: dict[str, ToolSpec] = {
         "КОНКРЕТНОГО контрагента (чи за іншим посилальним полем), спершу знайди його ref через "
         "search_catalog/filter_catalog, потім передай `filters`, напр. {\"Контрагент\": "
         "\"<uuid>\"} (значення — UUID з Ref.Data; для складеного типу — \"ІмяТипу:UUID\"). Імена "
-        "полів бери з describe_metadata, не вгадуй. Presentation посилання («… № 15 від …») чи "
-        "номер із нього — текст, НЕ ключ фільтра: реальний Number буває з префіксом/нулями. "
-        "Знайдений документ відкривай get_object за посиланням (type=Metadata, id=Data); маючи "
-        "лише номер — LIKE, напр. {\"Номер\": \"%15\"}, і звір Date. `fields` лише ДОДАЄ вказані реквізити шапки "
+        "полів бери з describe_metadata, не вгадуй. Presentation («… № 15 від …») — текст, НЕ ключ "
+        "фільтра: Number буває з префіксом/нулями. Знайдений документ відкривай get_object "
+        "(type=Metadata, id=Data); маючи лише номер — `q` (цифри збігаються без провідних "
+        "нулів: \"15\" знайде 00ЕР-000015), звір Date. `fields` лише ДОДАЄ вказані реквізити шапки "
         "до стандартного набору (напр. [\"Контрагент\", \"СуммаДокумента\"]) — не звужує "
         "вибірку; невідоме ім'я поля потрапляє в `unknown_fields` відповіді, а не в помилку. "
-        "Порожнє поле у списку НЕ означає, що реквізит порожній у базі. Для повних даних і "
+        "Для повних даних і "
         "табличних частин (номенклатура) — get_object за Ref.Data рядка. БЕЗ `orderby` порядок "
         "рядків ДОВІЛЬНИЙ (за внутрішнім ідентифікатором), а НЕ хронологічний — визначати "
         "«останній»/«перший» документ без `orderby` НЕ МОЖНА. Щоб отримати останній документ: "
-        "orderby=\"Дата\", desc=true, limit=1 — \"Дата\" є типовим внутрішнім ім'ям поля дати в "
-        "успадкованих російськомовних конфігураціях, АЛЕ не гарантією (в іншій конфігурації, "
-        "напр. англомовній, поле може зватись інакше). Якщо здогад хибний, сервіс відповідає "
+        "orderby=\"Дата\", desc=true, limit=1 — \"Дата\" — типовим ім'ям у російськомовних "
+        "конфігураціях, АЛЕ не гарантією (інакше — інше ім'я). Якщо здогад хибний, сервіс відповідає "
         "422 BAD_PARAMETER з РЕАЛЬНИМ ім'ям поля в тексті помилки (напр. \"did you mean "
         "'Дата'?\") — візьми ім'я звідти й повтори виклик, НЕ йди спершу за повним деревом "
-        "метаданих. Якщо помилка не підказала поле дати (напр. вибірка порожня чи інша "
-        "структура) — використай describe_metadata з q=\"дата\" (чи відповідним синонімом), щоб "
-        "знайти точне ім'я, замість перебору навмання. При заданому `orderby` курсорна пагінація "
+        "метаданих. Якщо не підказала — describe_metadata з "
+        "q=\"дата\". При заданому `orderby` курсорна пагінація "
         "(`cursor`) не діє. Якщо питання — «скільки»/«на яку суму»/«середнє»/«максимум»/"
         "«мінімум» — використовуй `agg` ЗАМІСТЬ вивантаження рядків і ручного підрахунку: "
         "напр. agg=[\"count\"] або agg=[\"sum:СуммаДокумента\"]. Відповідь тоді має форму "
@@ -380,12 +396,14 @@ TOOLS: dict[str, ToolSpec] = {
              "desc": {"type": "boolean", "default": False},
              "limit": {"type": "integer", "default": 100},
              "cursor": {"type": "string"},
+             "only": {"type": "boolean", "description": "With fields: return only those columns; unknown name gives 422 (module ≥ 1.0.41.6)"},
+             "q": {"type": "string",
+                   "description": "Search by number; digits match without leading zeros (module ≥ 1.0.41.6)"},
              "agg": {"type": "array", "items": {"type": "string"},
                      "description": "Агрегатні функції замість рядків, напр. [\"count\"], "
                                     "[\"sum:СуммаДокумента\"], [\"sum:Сумма\",\"avg:Сумма\"]. "
                                     "Функції: count, sum, avg, min, max (крім count — поле "
-                                    "ОБОВ'ЯЗКОВЕ і числове). Не рахуй суму/кількість руками по "
-                                    "списку рядків — використовуй agg. Несумісне з `cursor`."},
+                                    "ОБОВ'ЯЗКОВЕ і числове). Несумісне з `cursor`."},
              "groupby": {"type": "string",
                          "description": "Поле групування для agg, напр. Контрагент — по одній "
                                         "групі на значення поля (напр. «сума по кожному "
@@ -405,10 +423,10 @@ TOOLS: dict[str, ToolSpec] = {
             "field), first find its ref via search_catalog/filter_catalog, then pass `filters`, "
             "e.g. {\"Контрагент\": \"<uuid>\"} (the value is the UUID from Ref.Data; for a "
             "composite type — \"TypeName:UUID\"). Take field names from describe_metadata, "
-            "don't guess. A reference's Presentation («… № 15 від …») or a number parsed from "
-            "it is display text, NOT a filter key: the real Number may be padded/prefixed. Open "
-            "a found document with get_object by its reference (type=Metadata, id=Data); with "
-            "only a number use LIKE, e.g. {\"Номер\": \"%15\"}, and check Date. `fields` only ADDS the named header attributes to the standard set "
+            "don't guess. A Presentation («… № 15 від …») is display text, NOT a filter key: "
+            "Number may be padded/prefixed. Open a found document with get_object (type=Metadata, "
+            "id=Data); with only a number use `q` (digits match without leading zeros: \"15\" "
+            "finds 00ЕР-000015), check Date. `fields` only ADDS the named header attributes to the standard set "
             "(e.g. [\"Контрагент\", \"СуммаДокумента\"]) — it never narrows the selection; an "
             "unknown field name lands in the response's `unknown_fields`, not in an error. An "
             "empty field in a list row does NOT mean the attribute is empty in the base. For "
@@ -421,10 +439,7 @@ TOOLS: dict[str, ToolSpec] = {
             "English-named one, the field may be called something else). If the guess is wrong, "
             "the service answers 422 BAD_PARAMETER with the REAL field name in the error text "
             "(e.g. \"did you mean 'Дата'?\") — take the name from there and retry, do NOT go "
-            "through the full metadata tree first. If the error didn't hint the date field "
-            "(e.g. the selection is empty or the structure differs) — use describe_metadata "
-            "with q=\"дата\" (or the matching synonym) to find the exact name, instead of "
-            "guessing blindly. With `orderby` set, cursor pagination (`cursor`) does not apply. "
+            "through the full metadata tree first. If it didn't — describe_metadata with q=\"дата\". With `orderby` set, cursor pagination (`cursor`) does not apply. "
             "If the question is 'how many'/'for what total sum'/'average'/'max'/'min' — use "
             "`agg` INSTEAD OF pulling rows and counting by hand: e.g. agg=[\"count\"] or "
             "agg=[\"sum:СуммаДокумента\"]. The response then takes the shape "
@@ -450,6 +465,9 @@ TOOLS: dict[str, ToolSpec] = {
         "(вид AccumulationRegisters) — не вгадуй (напр. вимір може зватися Контрагент, а не "
         "counterparty). Значення-посилання (контрагент, організація, номенклатура) передавай "
         "як UUID з Ref.Data. Приклад: {\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}. "
+        "`table` для регістру НАКОПИЧЕННЯ: balance (типово), turnovers (обороти за from/to; для "
+        "регістрів обертів лише вони), balance_and_turnovers; `from` обов'язковий, groupby "
+        "Period:month тощо. "
         "Регістр БУХГАЛТЕРІЇ (AccountingRegisters, журнал проводок): сальдо/обороти по РАХУНКУ. "
         "`table`: balance (сальдо на дату `on`), turnovers (обороти за from/to), "
         "balance_and_turnovers (сальдо на початок/обороти/сальдо на кінець — ОСВ), "
@@ -458,8 +476,7 @@ TOOLS: dict[str, ToolSpec] = {
         "один рядок на рахунок; groupby=[\"ExtDimension1\"] дає розріз за субконто "
         "(`ext_dimension_types` у відповіді каже, що таке ExtDimensionN для кожного рахунку); "
         "для drcr_turnovers субконто в filters/groupby — ExtDimensionDr1..N / ExtDimensionCr1..N. "
-        "resources=[\"<основна сума>\"] зменшує відповідь. Самі проводки — get_register_records. "
-        "Якщо база відповідає, що MCBP_AI застарів — треба оновити конфігурацію.",
+        "resources=[\"<основна сума>\"] зменшує відповідь. Самі проводки — get_register_records.",
         _params(
             {"type": {"type": "string",
                       "description": "Ім'я регістру накопичення або бухгалтерії (з list_metadata)"},
@@ -474,11 +491,11 @@ TOOLS: dict[str, ToolSpec] = {
                                    "(напр. «борг на 01.01.2026» → on=\"2026-01-01\")"},
              "table": {"type": "string",
                        "enum": ["balance", "turnovers", "balance_and_turnovers", "drcr_turnovers"],
-                       "description": "Лише регістр бухгалтерії: яку віртуальну таблицю читати"},
+                       "description": "Virtual table: balance, turnovers, balance_and_turnovers; drcr_turnovers is accounting-only (accumulation registers: module ≥ 1.0.41.6)"},
              "from": {"type": "string",
-                      "description": "Лише регістр бухгалтерії, таблиці оборотів: початок періоду YYYY-MM-DD"},
+                      "description": "Таблиці оборотів: початок періоду YYYY-MM-DD"},
              "to": {"type": "string",
-                    "description": "Лише регістр бухгалтерії, таблиці оборотів: кінець періоду YYYY-MM-DD"},
+                    "description": "Таблиці оборотів: кінець періоду YYYY-MM-DD"},
              "account": {"type": "array", "items": {"type": "string"},
                          "description": "Коди рахунків (напр. 361) або UUID; субрахунки включено"},
              "corr_account": {"type": "array", "items": {"type": "string"},
@@ -505,6 +522,9 @@ TOOLS: dict[str, ToolSpec] = {
             "be called Контрагент, not counterparty). Reference values (counterparty, "
             "organization, item) are passed as UUIDs from Ref.Data. Example: "
             "{\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}. "
+            "`table` for an ACCUMULATION register: balance (default), turnovers (over from/to; "
+            "turnover-type registers allow only these), balance_and_turnovers; `from` required, "
+            "groupby Period:month etc. "
             "ACCOUNTING register (AccountingRegisters, the posting journal): balances/turnovers "
             "per ACCOUNT. `table`: balance (balance at `on`), turnovers (turnovers over "
             "from/to), balance_and_turnovers (opening/turnovers/closing — the trial balance), "
@@ -628,6 +648,7 @@ TOOLS: dict[str, ToolSpec] = {
              "exclude_groups": {"type": "boolean", "default": False},
              "fields": {"type": "array", "items": {"type": "string"},
                         "description": "Додаткові реквізити у рядках, напр. [\"Покупатель\",\"КодПоЕДРПОУ\"]"},
+             "only": {"type": "boolean", "description": "With fields: return only those columns; unknown name gives 422 (module ≥ 1.0.41.6)"},
              "limit": {"type": "integer", "default": 100},
              "agg": {"type": "array", "items": {"type": "string"},
                      "description": "Агрегатні функції замість рядків, напр. [\"count\"], "
@@ -677,7 +698,8 @@ TOOLS: dict[str, ToolSpec] = {
         "…», інакше Catalogs (NOT_FOUND — вид Metadata дізнайся з list_metadata/describe_metadata). Presentation — лише текст, НЕ шукай за ним списком. Великі документи: передай `tabular_sections` (імена з "
         "describe_metadata; [] — без табличних частин) і `rows_limit` (типово 200 рядків на "
         "частину); `tabular_section_counts` у відповіді показує повний розмір кожної частини — "
-        "решту гортай через `offset`.",
+        "решту гортай через `offset`. Додаткові реквізити/відомості приходять разом "
+        "з об'єктом (`additional`) — окремо не шукай.",
         _params(
             {"metadata": {"type": "string", "description": "Вид: Catalogs, Documents, Tasks, ..."},
              "type": {"type": "string",
@@ -693,7 +715,9 @@ TOOLS: dict[str, ToolSpec] = {
                             "description": "Максимум рядків на кожну табличну частину"},
              "offset": {"type": "integer", "minimum": 0,
                         "description": "Пропустити перші N рядків кожної табличної частини "
-                                       "(наступна сторінка)"}},
+                                       "(наступна сторінка)"},
+             "only": {"type": "boolean", "description": "With fields: return only those columns; unknown name gives 422 (module ≥ 1.0.41.6)"},
+             "additional": {"type": "boolean", "description": "Additional attributes/info: false disables them; with only, shown only if true (module ≥ 1.0.41.6)"}},
             ["metadata", "type", "id"],
         ),
         _get_object,
@@ -709,7 +733,8 @@ TOOLS: dict[str, ToolSpec] = {
             "— never re-search a list by it. Large documents: pass `tabular_sections` (names "
             "from describe_metadata; [] — no tabular sections) and `rows_limit` (default 200 "
             "rows per section); `tabular_section_counts` in the response shows the full size of "
-            "each section — page through the rest with `offset`."
+            "each section — page through the rest with `offset`. Additional attributes/info come with the object "
+            "(`additional`) — don't search for them separately."
         )),
     "health": ToolSpec(
         "health",
@@ -864,8 +889,7 @@ TOOLS: dict[str, ToolSpec] = {
         "\"<вимір сценарію>\"] → один рядок на статтю×сценарій. `Period:month|quarter|year` "
         "групує за періодом. Відповідь тоді — {\"aggregates\":[...]} замість {\"data\":[...]}; "
         "неактивні рухи не враховуються; у регістрі залишків групи розділені за RecordType "
-        "(прихід/витрата окремо, `record_type_split: true`). Сирі рядки — лише щоб подивитись "
-        "окремі рухи. "
+        "(прихід/витрата окремо, `record_type_split: true`). "
         "Регістр БУХГАЛТЕРІЇ: рядки — проводки (AccountDr/AccountCr, ExtDimensionDr1.., суми); "
         "`from` (або filters.Recorder) ОБОВ'ЯЗКОВИЙ; filters.AccountDr=\"361\" бере й субрахунки; "
         "filters.Account / filters.ExtDimension — будь-яка сторона / будь-яка позиція. Підсумки "
@@ -892,7 +916,9 @@ TOOLS: dict[str, ToolSpec] = {
              "groupby": {"type": "array", "items": {"type": "string"},
                          "description": "До 4 полів групування для agg: вимір/реквізит "
                                         "(напр. Статья) або Period:day|week|month|quarter|year. "
-                                        "Без agg — 422"}},
+                                        "Без agg — 422"},
+             "fields": {"type": "array", "items": {"type": "string"},
+                        "description": "Return only these columns plus key ones; unknown name gives 422 (module ≥ 1.0.41.6)"}},
             ["type"],
         ),
         _register_records,
@@ -930,6 +956,46 @@ TOOLS: dict[str, ToolSpec] = {
             "subaccounts too; filters.Account / filters.ExtDimension match either side / any "
             "position. Totals per account — get_register_balance table=turnovers, NOT agg over "
             "postings (agg groups by the exact account, no roll-up to the parent account)."
+        )),
+    "get_related_documents": ToolSpec(
+        "get_related_documents",
+        "Де використовується об'єкт: документи (і записи регістрів), що посилаються на нього. "
+        "metadata/type/id — як у get_object. found_in — поле/регістр; `truncated`/`failed_sources` — "
+        "звузь `documents`/`sources`. (модуль ≥ 1.0.41.6)",
+        _params(
+            {"metadata": {"type": "string", "description": "Kind: Catalogs, Documents, ..."},
+             "type": {"type": "string", "description": "Object type name"},
+             "id": {"type": "string", "description": "Object UUID (Ref.Data)"},
+             "documents": {"type": "array", "items": {"type": "string"},
+                           "description": "Scan only these document types (module ≥ 1.0.41.6)"},
+             "sources": {"type": "string", "enum": ["documents", "registers", "all"],
+                         "description": "Where to look, default all (module ≥ 1.0.41.6)"},
+             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 50}},
+            ["metadata", "type", "id"],
+        ),
+        _related_documents,
+        description_en=(
+            "Where an object is used: documents (and register records) that reference it. "
+            "metadata/type/id as in get_object. Rows: type, ref, number, date, deleted, found_in "
+            "(field/register); `truncated`, `failed_sources` — narrow `documents`/`sources`. "
+            "(module ≥ 1.0.41.6)"
+        )),
+    "full_text_search": ToolSpec(
+        "full_text_search",
+        "Повнотекстовий пошук по всій базі через платформений індекс: першим, коли користувач "
+        "дав довільний текст і тип невідомий; знайдені ref відкривай get_object. (модуль ≥ 1.0.41.6)",
+        _params(
+            {"text": {"type": "string", "description": "Text to find in the full-text index"},
+             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+             "metadata": {"type": "array", "items": {"type": "string"},
+                          "description": "Restrict to full metadata names, e.g. Catalog.X, Document.Y"}},
+            ["text"],
+        ),
+        _full_text_search,
+        description_en=(
+            "Free-text search across the whole infobase via the platform full-text index; use it "
+            "first when the user gives arbitrary text and the type is unknown; follow returned "
+            "refs with get_object. (module ≥ 1.0.41.6)"
         )),
     "set_function_status": ToolSpec(
         "set_function_status",

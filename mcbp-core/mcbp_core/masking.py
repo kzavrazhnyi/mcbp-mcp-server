@@ -422,6 +422,117 @@ def _looks_like_aggregate_envelope(value: dict[str, Any]) -> bool:
     return "aggregates" in value
 
 
+# --- Marked per-type rules: additional properties and contact-information kinds -------------
+
+# A per-type policy entry "<dotted type>.<marker>:<name pattern>" (from an MCBP_SensitiveData
+# register row whose ObjectAttribute is "<marker>:<name>") targets not an attribute but:
+#   additional:<name> - one additional attribute / property, by its presentation, in
+#       `data.additional[{name, value}]` and in a property tabular section (rows of a
+#       chart-of-characteristic-types reference + one value column, found by shape);
+#   contact:<name> - the contact-information rows of one kind: a tabular-section row holding a
+#       reference whose presentation is that kind; every string of such a row is masked.
+ADDITIONAL_MARKER = "additional"
+CONTACT_MARKER = "contact"
+_ADDITIONAL_KEY = "additional"
+_ADDITIONAL_ITEM_KEYS = frozenset({"name", "value"})
+_MARKER_RE: dict[str, re.Pattern[str]] = {
+    marker: re.compile(rf"\.{marker}:", re.IGNORECASE)
+    for marker in (ADDITIONAL_MARKER, CONTACT_MARKER)
+}
+# The platform's standard line-number attribute of a tabular-section row (EN / inherited RU / UA).
+_LINE_NUMBER_KEYS = frozenset({"LineNumber", "НомерСтроки", "НомерРядка"})
+_PROPERTY_TYPE_PREFIX = "ПланВидовХарактеристик."
+
+
+def _looks_like_additional(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(
+        isinstance(item, dict) and _ADDITIONAL_ITEM_KEYS <= item.keys()
+        and isinstance(item["name"], str)
+        for item in value
+    )
+
+
+def _matches_marked_rule(
+    context: str | None, normalized_name: str, entries: tuple[str, ...], marker: str
+) -> bool:
+    """True when an entry "<dotted type>.<marker>:<name pattern>" has its type equal to
+    `context` and its name pattern matching the normalized name (case- and whitespace-
+    insensitive, same glob-lite as `_matches_pattern`). The name may hold dots, so the entry
+    is split at the marker, not at the last dot."""
+    if context is None or not normalized_name:
+        return False
+    pattern = _MARKER_RE[marker]
+    for entry in entries:
+        found = pattern.search(entry)
+        if found and entry[:found.start()] == context and _matches_pattern(
+            normalized_name, (entry[found.end():],)
+        ):
+            return True
+    return False
+
+
+def _has_marked_rules(context: str | None, entries: tuple[str, ...], marker: str) -> bool:
+    if context is None:
+        return False
+    pattern = _MARKER_RE[marker]
+    return any((m := pattern.search(e)) and e[:m.start()] == context for e in entries)
+
+
+def _has_type_rules(context: str | None, entries: tuple[str, ...]) -> bool:
+    return context is not None and any(entry.startswith(f"{context}.") for entry in entries)
+
+
+# Full-text search (`GET /metadata/all?fts=`): `{query, index_up_to_date, ..., data: [{type,
+# ref, presentation, description}]}`. `type` is the platform full name ("Catalog.X"); its kind
+# prefix (a generic platform kind name, the same on every configuration) gives the dotted type
+# when the row's `ref` carries no classifiable `Metadata`.
+_FTS_ENVELOPE_KEYS = frozenset({"query", "index_up_to_date", "data"})
+_FULL_NAME_DOTTED_PREFIX: dict[str, str] = {
+    "catalog": "Справочник.",
+    "document": "Документ.",
+    "task": "Задача.",
+    "businessprocess": "БизнесПроцесс.",
+    "chartofaccounts": "ПланСчетов.",
+    "chartofcharacteristictypes": "ПланВидовХарактеристик.",
+    "exchangeplan": "ПланОбмена.",
+}
+# Free-text patterns masked in a snippet of an OPEN type: e-mail addresses and digit runs of 8+
+# digits (tax codes, phone numbers, account numbers), separators inside a run allowed.
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_DIGIT_RUN_RE = re.compile(r"\+?\d[\d \t()\-]*\d")
+_DIGIT_RUN_MIN = 8
+
+
+def _looks_like_fts_envelope(value: dict[str, Any]) -> bool:
+    return _FTS_ENVELOPE_KEYS <= value.keys() and isinstance(value["data"], list)
+
+
+def _dotted_from_full_name(full_name: Any) -> str | None:
+    if not isinstance(full_name, str):
+        return None
+    kind, sep, name = full_name.partition(".")
+    prefix = _FULL_NAME_DOTTED_PREFIX.get(kind.lower())
+    return f"{prefix}{name}" if sep and name and prefix else None
+
+
+# Related documents (`GET /related/{kind}/{type}/{id}`): `{metadata, type, id, sources, data:
+# [{type, ref, number, date, deleted, found_in}], truncated, scanned_sources[, failed_sources]}`.
+# `type`/`found_in` of a row and every envelope key but `data` are structure (metadata names,
+# counters, scanned query tables).
+_RELATED_ROW_KEYS = frozenset({"type", "ref", "found_in"})
+_RELATED_STRUCTURAL_KEYS = frozenset(
+    {"metadata", "type", "id", "sources", "truncated", "scanned_sources", "failed_sources"}
+)
+_RELATED_FIELD_ALIASES = {"number": "Number", "date": "Date"}
+
+
+def _looks_like_related_envelope(value: dict[str, Any]) -> bool:
+    data = value.get("data")
+    return "scanned_sources" in value and isinstance(data, list) and all(
+        isinstance(row, dict) and _RELATED_ROW_KEYS <= row.keys() for row in data
+    )
+
+
 def _is_open_type(dotted: str | None, policy: MaskingPolicy) -> bool:
     if dotted is None:
         return False
@@ -657,6 +768,8 @@ class Masker:
     # --- Internals: recursive walk ---------------------------------------------
 
     def _walk_value(self, key: str | None, value: Any, context: str | None) -> Any:
+        if key == _ADDITIONAL_KEY and _looks_like_additional(value):
+            return self._mask_additional(value, context)
         if isinstance(value, dict):
             if _looks_like_reference(value):
                 return self._mask_reference(value)
@@ -668,15 +781,16 @@ class Masker:
                 return self._mask_aggregate_envelope(value, context)
             if _looks_like_event_log_envelope(value):
                 return self._mask_event_log_envelope(value)
+            if _looks_like_fts_envelope(value):
+                return self._mask_fts_envelope(value)
+            if _looks_like_related_envelope(value):
+                return self._mask_related_envelope(value)
             if _looks_like_envelope(value):
                 return self._mask_envelope(value, context)
             return {k: self._walk_value(k, v, context) for k, v in value.items()}
         if isinstance(value, list):
             if value and all(isinstance(item, dict) for item in value):
-                return [
-                    self._walk_value(None, item, self._row_context(item, context))
-                    for item in value
-                ]
+                return [self._mask_row(item, context) for item in value]
             return [self._walk_value(key, item, context) for item in value]
         return self._mask_scalar(key, value, context)
 
@@ -773,6 +887,224 @@ class Masker:
         out["aggregates"] = masked_rows
         return out
 
+    def _mask_row(self, row: dict[str, Any], context: str | None) -> Any:
+        """One dict of a list: a property row or a contact-kind row of a tabular section of
+        `context` gets its own rules, any other row is walked as before."""
+        if "Ref" not in row:
+            prop = self._property_row(row)
+            if prop is not None:
+                return self._mask_property_row(row, prop, context)
+            if self._is_contact_row(row, context):
+                return self._mask_contact_row(row, context)
+        return self._walk_value(None, row, self._row_context(row, context))
+
+    def _property_row(self, row: dict[str, Any]) -> str | None:
+        """The property column of a property tabular-section row: a column holding a reference
+        to a chart of characteristic types (whatever the other columns - value, text copy,
+        ...). None when the row has no such column."""
+        for key, ref in row.items():
+            if key in _LINE_NUMBER_KEYS:
+                continue
+            if isinstance(ref, dict) and _looks_like_reference(ref) and ref.get("Metadata"):
+                dotted = self._classify(ref["Metadata"])
+                if dotted and dotted.startswith(_PROPERTY_TYPE_PREFIX):
+                    return key
+        return None
+
+    def _mask_property_row(
+        self, row: dict[str, Any], prop: str, context: str | None
+    ) -> dict[str, Any]:
+        """The property reference is walked as usual; every other column (the value, its text
+        copy, ...) is masked by the property's rules, like the `additional` block."""
+        ref = row[prop]
+        name = ref.get("Presentation") if isinstance(ref.get("Presentation"), str) else ""
+        out: dict[str, Any] = {}
+        for k, v in row.items():
+            if k in _LINE_NUMBER_KEYS:
+                out[k] = v
+            elif k == prop:
+                out[k] = self._walk_value(k, v, context)
+            else:
+                out[k] = self._mask_property_value(name or k, v, context)
+        return out
+
+    def _is_contact_row(self, row: dict[str, Any], context: str | None) -> bool:
+        if not _has_marked_rules(context, self._policy.force_mask_type_fields, CONTACT_MARKER):
+            return False
+        return any(
+            isinstance(v, dict) and isinstance(v.get("Presentation"), str)
+            and _matches_marked_rule(context, _normalize_field_name(v["Presentation"]),
+                                     self._policy.force_mask_type_fields, CONTACT_MARKER)
+            for v in row.values()
+        )
+
+    def _mask_contact_row(self, row: dict[str, Any], context: str | None) -> dict[str, Any]:
+        """Every string of the row (presentation, field values, e-mail, phone, ...) masked; the
+        kind and type references stay as the ordinary rules leave them."""
+        out: dict[str, Any] = {}
+        for k, v in row.items():
+            if k in _LINE_NUMBER_KEYS:
+                out[k] = v
+            elif isinstance(v, str):
+                out[k] = self._force_mask(k, v)
+            else:
+                out[k] = self._walk_value(k, v, context)
+        return out
+
+    def _mask_additional(self, items: list[dict[str, Any]], context: str | None) -> list:
+        """`[{name, value}]`: `name` (the property's presentation - configuration data) stays
+        readable, `value` is masked by `_mask_property_value`."""
+        out = []
+        for item in items:
+            masked = {
+                k: self._walk_value(k, v, context)
+                for k, v in item.items() if k not in _ADDITIONAL_ITEM_KEYS
+            }
+            masked["name"] = item["name"]
+            masked["value"] = self._mask_property_value(item["name"], item["value"], context)
+            out.append({k: masked[k] for k in item})
+        return out
+
+    def _mask_property_value(self, name: str, value: Any, context: str | None) -> Any:
+        """The value of an additional property, masked as if `name` were its field name: the
+        forced substrings (ЄДРПОУ, phone, ...) and a per-type rule "<type>.additional:<name>"
+        mask it whatever its type, numbers included; an open rule opens it unless the name is
+        forced. An exact open field name (Number, Date, ...) does not open a value here: a
+        property is not that platform attribute."""
+        normalized = _normalize_field_name(name)
+        forced = _matches_pattern(normalized, self._policy.force_mask_fields) or _contains_any(
+            normalized, self._policy.forced_mask_substrings
+        )
+        if forced or _matches_marked_rule(
+            context, normalized, self._policy.force_mask_type_fields, ADDITIONAL_MARKER
+        ):
+            return self._force_mask(name, value)
+        if _matches_marked_rule(
+            context, normalized, self._policy.allow_plain_type_fields, ADDITIONAL_MARKER
+        ):
+            return value
+        if isinstance(value, (dict, list)):
+            return self._walk_value(name, value, context)
+        return self._mask_scalar(name, value, context, open_names=False)
+
+    def _force_mask(self, key: str, value: Any) -> Any:
+        """Masks a value whatever its type's openness: numbers and a reference's
+        Presentation too. None, booleans and blank strings carry nothing and stay."""
+        if isinstance(value, dict) and _looks_like_reference(value):
+            return self._mask_reference(value, force=True)
+        if isinstance(value, dict) and _looks_like_value_reference(value):
+            out = dict(value)
+            for part in ("Presentation", "Value"):
+                text = value.get(part)
+                if isinstance(text, str) and text.strip():
+                    out[part] = self._pseudonym_for_field(key, text)
+            return out
+        if value is None or isinstance(value, bool) or (
+            isinstance(value, str) and not value.strip()
+        ):
+            return value
+        if isinstance(value, dict):
+            return {k: self._force_mask(k, v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._force_mask(key, v) for v in value]
+        return self._pseudonym_for_field(key, value)
+
+    def _mask_fts_envelope(self, value: dict[str, Any]) -> dict[str, Any]:
+        rows = [self._mask_fts_row(row) if isinstance(row, dict) else row
+                for row in value["data"]]
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if k == "data":
+                out[k] = rows
+            elif k == "query" and isinstance(v, str):
+                # The model's own search text; values it knows only as pseudonyms (unmasked for
+                # the call) go back as pseudonyms. After the rows, so a value first seen in this
+                # very answer is known too.
+                out[k] = self.mask_text(v)
+            elif v is None or isinstance(v, (bool, int, float)) or k == "index_updated":
+                out[k] = v
+            else:
+                out[k] = self._walk_value(k, v, None)
+        return out
+
+    def _mask_fts_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        ref = row.get("ref")
+        metadata_name = ref.get("Metadata") if isinstance(ref, dict) else None
+        dotted = (self._classify(metadata_name) if metadata_name else None) or (
+            _dotted_from_full_name(row.get("type"))
+        )
+        masked_ref = self._walk_value("ref", ref, dotted) if isinstance(ref, dict) else ref
+        ref_masked = isinstance(ref, dict) and masked_ref != ref
+        # A snippet of an open type is readable (minus e-mails / long digit runs / seen values);
+        # one of a closed type, or of an open type with per-type mask rules (an attribute the
+        # snippet may quote), is masked whole.
+        ref_open = not ref_masked and _is_open_type(dotted, self._policy)
+        open_row = ref_open and not _has_type_rules(dotted, self._policy.force_mask_type_fields)
+        out: dict[str, Any] = {}
+        for k, v in row.items():
+            if k == "type":
+                out[k] = v
+            elif k == "ref":
+                out[k] = masked_ref
+            elif not isinstance(v, str) or not v.strip():
+                out[k] = self._walk_value(k, v, dotted)
+            elif k == "description" and open_row:
+                out[k] = self._mask_free_text(v)
+            elif k != "description" and ref_open:
+                out[k] = v
+            elif k == "presentation" and ref_masked and v == ref.get("Presentation"):
+                out[k] = masked_ref["Presentation"]  # the ref's own pseudonym: joinable
+            else:
+                out[k] = self._pseudonym_for_field(
+                    metadata_name if k == "presentation" and metadata_name else k, v
+                )
+        return out
+
+    def _mask_free_text(self, text: str) -> str:
+        """Best-effort masking of free text: already-seen originals, e-mail addresses and
+        digit runs of `_DIGIT_RUN_MIN`+ digits become pseudonyms."""
+        text = self.mask_text(text)
+        text = _EMAIL_RE.sub(lambda m: self._pseudonym_for_field("email", m.group()), text)
+
+        def _digits(match: re.Match[str]) -> str:
+            found = match.group()
+            if sum(ch.isdigit() for ch in found) < _DIGIT_RUN_MIN:
+                return found
+            return self._pseudonym_for_field("Код", found)
+
+        return _DIGIT_RUN_RE.sub(_digits, text)
+
+    def _mask_related_envelope(self, value: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if k == "data":
+                out[k] = [self._mask_related_row(row) for row in v]
+            elif k in _RELATED_STRUCTURAL_KEYS:
+                out[k] = v
+            else:
+                out[k] = self._walk_value(k, v, None)
+        return out
+
+    def _mask_related_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        ref = row.get("ref")
+        metadata_name = ref.get("Metadata") if isinstance(ref, dict) else None
+        doc_type = row.get("type")
+        dotted = (self._classify(metadata_name) if metadata_name else None) or (
+            self._dotted_type(doc_type, "document") if isinstance(doc_type, str) else None
+        )
+        closed = dotted in self._policy.mask_type_exact
+        out: dict[str, Any] = {}
+        for k, v in row.items():
+            if k in ("type", "found_in", "deleted"):
+                out[k] = v
+            elif k == "number" and closed:
+                out[k] = self._force_mask("Number", v)  # a closed document type: number too
+            elif k in _RELATED_FIELD_ALIASES:
+                out[k] = self._mask_scalar(_RELATED_FIELD_ALIASES[k], v, dotted)
+            else:
+                out[k] = self._walk_value(k, v, dotted)
+        return out
+
     # --- Internals: scalar / reference masking -----------------------------------
 
     def _field_types(self, key: str) -> list[str] | None:
@@ -784,7 +1116,9 @@ class Masker:
             log.debug("field_type_lookup failed for %r", key, exc_info=True)
             return None
 
-    def _mask_scalar(self, key: str | None, value: Any, context: str | None) -> Any:
+    def _mask_scalar(
+        self, key: str | None, value: Any, context: str | None, *, open_names: bool = True
+    ) -> Any:
         if value is None or isinstance(value, bool):
             return value
 
@@ -815,7 +1149,7 @@ class Masker:
         if key and _matches_pattern(normalized, self._policy.allow_plain_fields):
             return value
 
-        if key in self._policy.open_field_names:
+        if open_names and key in self._policy.open_field_names:
             return value
 
         if isinstance(value, (int, float)):
@@ -844,11 +1178,11 @@ class Masker:
 
         return self._pseudonym_for_field(key, value)
 
-    def _mask_reference(self, ref: dict[str, Any]) -> dict[str, Any]:
+    def _mask_reference(self, ref: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
         metadata_name = ref.get("Metadata")
         uuid = ref.get("Data")
         dotted = self._classify(metadata_name) if metadata_name else None
-        if _is_open_type(dotted, self._policy):
+        if not force and _is_open_type(dotted, self._policy):
             return ref
 
         presentation = ref.get("Presentation")
