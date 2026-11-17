@@ -173,18 +173,16 @@ def test_fts_closed_type_snippet_masked_whole_presentation_joins_ref():
     assert result["index_updated"] == "2026-11-01T00:00:00" and result["total"] == 1
 
 
-def test_fts_open_type_snippet_keeps_text_masks_email_digits_and_seen_values():
+def test_fts_open_type_snippet_masked_whole_in_a_fresh_session():
+    # A fresh masker has never seen the supplier: a snippet kept readable would leak its name.
     masker = Masker(secret="t", type_classifier=_classifier)
-    seen = masker.mask({"data": [{"Ref": _ref("Контрагенты", "u-1", "Бета ТОВ")}]})
-    beta = seen["data"][0]["Ref"]["Presentation"]
-    result = masker.mask(_fts("Catalog.Номенклатура", "Номенклатура", "Цвях 50 мм",
-                              "Цвях 50 мм, постачальник Бета ТОВ, a@b.ua, тел +38 050 111 22 33"))
+    snippet = "Цвях 50 мм, Постачальник: Світанок, ТОВ, a@b.ua, тел +38 050 111 22 33"
+    result = masker.mask(_fts("Catalog.Номенклатура", "Номенклатура", "Цвях 50 мм", snippet))
     row = result["data"][0]
-    assert row["presentation"] == "Цвях 50 мм"
-    assert row["description"].startswith("Цвях 50 мм, постачальник ")
-    assert beta in row["description"]
-    assert "a@b.ua" not in row["description"] and "111 22 33" not in row["description"]
-    assert masker.rehydrate_text(row["description"]).endswith("a@b.ua, тел +38 050 111 22 33")
+    assert row["presentation"] == "Цвях 50 мм"  # an open type's own name stays readable
+    assert row["ref"]["Presentation"] == "Цвях 50 мм" and row["type"] == "Catalog.Номенклатура"
+    assert "Світанок" not in row["description"] and "111 22 33" not in row["description"]
+    assert masker.rehydrate_text(row["description"]) == snippet
 
 
 def test_fts_open_type_with_type_rules_snippet_masked_whole():

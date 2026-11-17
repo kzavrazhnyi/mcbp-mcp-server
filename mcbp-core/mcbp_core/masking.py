@@ -478,10 +478,6 @@ def _has_marked_rules(context: str | None, entries: tuple[str, ...], marker: str
     return any((m := pattern.search(e)) and e[:m.start()] == context for e in entries)
 
 
-def _has_type_rules(context: str | None, entries: tuple[str, ...]) -> bool:
-    return context is not None and any(entry.startswith(f"{context}.") for entry in entries)
-
-
 # Full-text search (`GET /metadata/all?fts=`): `{query, index_up_to_date, ..., data: [{type,
 # ref, presentation, description}]}`. `type` is the platform full name ("Catalog.X"); its kind
 # prefix (a generic platform kind name, the same on every configuration) gives the dotted type
@@ -496,10 +492,9 @@ _FULL_NAME_DOTTED_PREFIX: dict[str, str] = {
     "chartofcharacteristictypes": "ПланВидовХарактеристик.",
     "exchangeplan": "ПланОбмена.",
 }
-# Free-text patterns masked in a snippet of an OPEN type: e-mail addresses and digit runs of 8+
-# digits (tax codes, phone numbers, account numbers), separators inside a run allowed.
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_DIGIT_RUN_RE = re.compile(r"\+?\d[\d \t()\-]*\d")
+# A run of digits (tax codes, phone numbers, account numbers), separators inside a run allowed:
+# an `additional` value of `_DIGIT_RUN_MIN`+ digits is masked whatever its name.
+_DIGIT_RUN_RE = re.compile(r"\+?\(?\d[\d \t().\-]*\d")
 _DIGIT_RUN_MIN = 8
 
 
@@ -543,17 +538,137 @@ def _is_open_type(dotted: str | None, policy: MaskingPolicy) -> bool:
     return any(dotted.startswith(prefix) for prefix in policy.open_type_prefixes)
 
 
+# Standard attributes: the JSON key is canonical (Description, Code, ...), a register row written
+# by BSL names the metadata attribute (Наименование / Найменування, Код, ...). Normalized names of
+# one group are the same field for per-type rules, both ways.
+_STANDARD_NAME_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("description", "наименование", "найменування"),
+    ("code", "код"),
+    ("number", "номер"),
+    ("date", "дата"),
+    ("owner", "владелец", "власник"),
+    ("parent", "родитель", "батько"),
+    ("deletionmark", "пометкаудаления", "позначкавидалення"),
+    ("posted", "проведен", "проведений"),
+    ("isfolder", "этогруппа", "цегрупа"),
+    ("valuetype", "типзначения", "типзначення"),
+    ("ref", "ссылка", "посилання"),
+    ("linenumber", "номерстроки", "номеррядка"),
+)
+_STANDARD_NAME_VARIANTS: dict[str, tuple[str, ...]] = {
+    name: group for group in _STANDARD_NAME_GROUPS for name in group
+}
+
+
+def _name_variants(normalized: str) -> tuple[str, ...]:
+    return _STANDARD_NAME_VARIANTS.get(normalized, (normalized,))
+
+
 def _matches_type_field(context: str | None, normalized: str, entries: tuple[str, ...]) -> bool:
     """True when an entry "<dotted type>.<field pattern>" has its type equal to `context`
     and its field pattern matching the normalized field name (same glob-lite as
-    `_matches_pattern`). The field part is after the LAST dot — field names have none."""
+    `_matches_pattern`) or one of its standard-attribute names (`_STANDARD_NAME_GROUPS`).
+    The field part is after the LAST dot — field names have none. A tabular-section field
+    is matched with `context` = "<dotted type>.<section>" (entry "<type>.<section>.<field>")."""
     if context is None or not normalized:
         return False
+    variants = _name_variants(normalized)
     for entry in entries:
         type_part, sep, field_part = entry.rpartition(".")
-        if sep and type_part == context and _matches_pattern(normalized, (field_part,)):
+        if sep and type_part == context and any(
+            _matches_pattern(name, (field_part,)) for name in variants
+        ):
             return True
     return False
+
+
+@dataclass(frozen=True)
+class _PolicyIndex:
+    """Lookups built once per policy, so a per-row / per-reference check is O(1) whatever the
+    number of per-type rules: `rule_contexts` - every "<type>[.<section>]" part of a per-type
+    field rule (a tabular-section context has rules iff it is here); `name_masked_types` - the
+    dotted types with a Mask rule on Description under any of its names (Наименование, ...)."""
+
+    rule_contexts: frozenset[str]
+    name_masked_types: frozenset[str]
+
+    @classmethod
+    def build(cls, policy: MaskingPolicy) -> _PolicyIndex:
+        contexts: set[str] = set()
+        name_masked: set[str] = set()
+        description = _name_variants("description")
+        for entries, forced in ((policy.force_mask_type_fields, True),
+                                (policy.allow_plain_type_fields, False)):
+            for entry in entries:
+                type_part, sep, field_part = entry.rpartition(".")
+                if not sep:
+                    continue
+                contexts.add(type_part)
+                if forced and any(_matches_pattern(n, (field_part,)) for n in description):
+                    name_masked.add(type_part)
+        return cls(frozenset(contexts), frozenset(name_masked))
+
+
+def _looks_like_long_number(value: Any) -> bool:
+    """A number of `_DIGIT_RUN_MIN`+ digits, as an int, an integral float or a string of digits
+    (spaces, brackets, dots, dashes and a leading + / "(" allowed: a phone): ЄДРПОУ (8), ІПН (10),
+    phone numbers, account numbers. A date is not one.
+
+    Trade-off, kept on purpose: an `additional` value is masked by this whatever its name, so a
+    whole amount of 10 000 000+ (or such a number written as a string, "12345678.25" too) is
+    masked as well; a float with a fraction, 7 digits or fewer and dates stay readable. A wrong
+    mask costs the model one readable number; a wrong open leaks a tax code or a phone."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, float):
+        if not value.is_integer():
+            return False
+        value = int(value)
+    if isinstance(value, int):
+        return len(str(abs(value))) >= _DIGIT_RUN_MIN
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return (
+        bool(_DIGIT_RUN_RE.fullmatch(text))
+        and not _looks_like_date(text)
+        and sum(ch.isdigit() for ch in text) >= _DIGIT_RUN_MIN
+    )
+
+
+# --- Public predicates: the policy's field rules, for callers that check masking (audits) ----
+
+def normalize_field_name(name: str) -> str:
+    """A field name as the rules compare it: lowercased, whitespace removed."""
+    return _normalize_field_name(name)
+
+
+def is_open_type(dotted: str | None, policy: MaskingPolicy) -> bool:
+    """True when the dotted type ("Справочник.X") is open under `policy` (its references and,
+    for an exact open catalog, its own fields stay readable)."""
+    return _is_open_type(dotted, policy)
+
+
+def is_field_forced(policy: MaskingPolicy, field_name: str, context: str | None = None) -> bool:
+    """True when `field_name` is always masked: a forced substring (ІПН, phone, ...), a
+    `force_mask_fields` pattern, or a per-type Mask rule of `context` ("<type>" or, for a
+    tabular-section field, "<type>.<section>"; standard attributes under any of their names)."""
+    normalized = _normalize_field_name(field_name)
+    return bool(normalized) and (
+        _contains_any(normalized, policy.forced_mask_substrings)
+        or _matches_pattern(normalized, policy.force_mask_fields)
+        or _matches_type_field(context, normalized, policy.force_mask_type_fields)
+    )
+
+
+def is_field_opened(policy: MaskingPolicy, field_name: str, context: str | None = None) -> bool:
+    """True when a rule opens `field_name` (`allow_plain_fields` or a per-type open rule of
+    `context`). A forced name stays masked whatever this says - check `is_field_forced` first."""
+    normalized = _normalize_field_name(field_name)
+    return bool(normalized) and (
+        _matches_pattern(normalized, policy.allow_plain_fields)
+        or _matches_type_field(context, normalized, policy.allow_plain_type_fields)
+    )
 
 
 def _b32(digest: bytes, length: int) -> str:
@@ -601,6 +716,7 @@ class Masker:
             secret = secret.encode("utf-8")
         self._secret = secret
         self._policy = policy or DEFAULT_POLICY
+        self._index = _PolicyIndex.build(self._policy)
         self._classify = type_classifier or (lambda _name: None)
         self._field_type_lookup = field_type_lookup
         self._code_length = code_length
@@ -660,6 +776,7 @@ class Masker:
         """Replaces the masking rules only. The secret, the cache and the pseudonym maps are
         kept, so every pseudonym already issued stays identical and still rehydrates/unmasks."""
         self._policy = policy
+        self._index = _PolicyIndex.build(policy)
 
     def unmask_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Replaces any known pseudonym found inside tool-call arguments — including
@@ -790,7 +907,7 @@ class Masker:
             return {k: self._walk_value(k, v, context) for k, v in value.items()}
         if isinstance(value, list):
             if value and all(isinstance(item, dict) for item in value):
-                return [self._mask_row(item, context) for item in value]
+                return [self._mask_row(item, context, key) for item in value]
             return [self._walk_value(key, item, context) for item in value]
         return self._mask_scalar(key, value, context)
 
@@ -887,16 +1004,77 @@ class Masker:
         out["aggregates"] = masked_rows
         return out
 
-    def _mask_row(self, row: dict[str, Any], context: str | None) -> Any:
+    def _mask_row(
+        self, row: dict[str, Any], context: str | None, section: str | None = None
+    ) -> Any:
         """One dict of a list: a property row or a contact-kind row of a tabular section of
-        `context` gets its own rules, any other row is walked as before."""
-        if "Ref" not in row:
-            prop = self._property_row(row)
-            if prop is not None:
-                return self._mask_property_row(row, prop, context)
-            if self._is_contact_row(row, context):
-                return self._mask_contact_row(row, context)
-        return self._walk_value(None, row, self._row_context(row, context))
+        `context` gets its own rules, any other row is walked as before. On top of that, an
+        explicit rule "<type>.<section>.<field>" of the row's section `section` wins for its
+        field, in a property or contact row too (`_apply_section_rules`)."""
+        if "Ref" in row:
+            return self._walk_value(None, row, self._row_context(row, context))
+        prop = self._property_row(row)
+        can_open = True
+        prop_name: str | None = None
+        if prop is not None:
+            masked = self._mask_property_row(row, prop, context)
+            name = row[prop].get("Presentation")
+            prop_name = name if isinstance(name, str) else ""
+            # A value of an always-masked property (ЄДРПОУ, phone, ...) or of one with an
+            # explicit "<type>.additional:<name>" Mask row is never opened by a section rule.
+            can_open = not self._property_always_masked(prop_name, context)
+        elif self._is_contact_row(row, context):
+            masked = self._mask_contact_row(row, context)
+            # A "<type>.contact:<kind>" Mask row masks the whole row; a section rule never opens it.
+            can_open = False
+        else:
+            masked = self._walk_value(None, row, context)
+        section_context = f"{context}.{section}" if context and section else None
+        if section_context in self._index.rule_contexts:
+            return self._apply_section_rules(row, masked, section_context, can_open,
+                                             prop_name, context)
+        return masked
+
+    def _property_always_masked(self, name: str, context: str | None) -> bool:
+        normalized = _normalize_field_name(name)
+        return self._is_forced_name(normalized) or _matches_marked_rule(
+            context, normalized, self._policy.force_mask_type_fields, ADDITIONAL_MARKER)
+
+    def _apply_section_rules(
+        self, row: dict[str, Any], masked: dict[str, Any], section_context: str,
+        can_open: bool, prop_name: str | None = None, context: str | None = None,
+    ) -> dict[str, Any]:
+        """A tabular-section row after its usual masking (`masked`): a field with a Mask rule is
+        masked whatever its type (a reference's presentation, a number); one with an open rule
+        is readable unless its name is always masked or `can_open` is false (a contact row, a
+        property with a forced name or an `additional:` Mask row). In a property row a long
+        number opens only through an explicit open `additional:<name>` row, as in the
+        `additional` block. An opened reference / enum value keeps its usual masking -
+        `_mask_reference` by its own type, so the presentation of a closed type stays masked;
+        only scalars are opened. Other fields keep their usual masking."""
+        out = dict(masked)
+        explicit_open = prop_name is not None and _matches_marked_rule(
+            context, _normalize_field_name(prop_name), self._policy.allow_plain_type_fields,
+            ADDITIONAL_MARKER)
+        for k, v in row.items():
+            normalized = _normalize_field_name(k)
+            if _matches_type_field(section_context, normalized,
+                                   self._policy.force_mask_type_fields):
+                out[k] = self._force_mask(k, v)
+            elif (can_open and not isinstance(v, (dict, list))
+                  and not self._is_forced_name(normalized)
+                  and not (prop_name is not None and not explicit_open
+                           and _looks_like_long_number(v))
+                  and _matches_type_field(section_context, normalized,
+                                          self._policy.allow_plain_type_fields)):
+                out[k] = v
+        return out
+
+    def _is_forced_name(self, normalized: str) -> bool:
+        return bool(normalized) and (
+            _matches_pattern(normalized, self._policy.force_mask_fields)
+            or _contains_any(normalized, self._policy.forced_mask_substrings)
+        )
 
     def _property_row(self, row: dict[str, Any]) -> str | None:
         """The property column of a property tabular-section row: a column holding a reference
@@ -983,6 +1161,10 @@ class Masker:
             context, normalized, self._policy.allow_plain_type_fields, ADDITIONAL_MARKER
         ):
             return value
+        if _looks_like_long_number(value):
+            # A code under a name no rule knows ("Податковий номер": 87654321): numbers and
+            # open types would leave it plain. Only an explicit open rule (above) opens it.
+            return self._force_mask(name, value)
         if isinstance(value, (dict, list)):
             return self._walk_value(name, value, context)
         return self._mask_scalar(name, value, context, open_names=False)
@@ -1035,11 +1217,10 @@ class Masker:
         )
         masked_ref = self._walk_value("ref", ref, dotted) if isinstance(ref, dict) else ref
         ref_masked = isinstance(ref, dict) and masked_ref != ref
-        # A snippet of an open type is readable (minus e-mails / long digit runs / seen values);
-        # one of a closed type, or of an open type with per-type mask rules (an attribute the
-        # snippet may quote), is masked whole.
+        # The snippet is masked whole, of an open type too: it quotes any attribute of the hit
+        # (a closed counterparty's name, a contact), which the row does not say and the masker
+        # cannot know. The type, the ref and an open type's presentation stay readable.
         ref_open = not ref_masked and _is_open_type(dotted, self._policy)
-        open_row = ref_open and not _has_type_rules(dotted, self._policy.force_mask_type_fields)
         out: dict[str, Any] = {}
         for k, v in row.items():
             if k == "type":
@@ -1048,8 +1229,6 @@ class Masker:
                 out[k] = masked_ref
             elif not isinstance(v, str) or not v.strip():
                 out[k] = self._walk_value(k, v, dotted)
-            elif k == "description" and open_row:
-                out[k] = self._mask_free_text(v)
             elif k != "description" and ref_open:
                 out[k] = v
             elif k == "presentation" and ref_masked and v == ref.get("Presentation"):
@@ -1059,20 +1238,6 @@ class Masker:
                     metadata_name if k == "presentation" and metadata_name else k, v
                 )
         return out
-
-    def _mask_free_text(self, text: str) -> str:
-        """Best-effort masking of free text: already-seen originals, e-mail addresses and
-        digit runs of `_DIGIT_RUN_MIN`+ digits become pseudonyms."""
-        text = self.mask_text(text)
-        text = _EMAIL_RE.sub(lambda m: self._pseudonym_for_field("email", m.group()), text)
-
-        def _digits(match: re.Match[str]) -> str:
-            found = match.group()
-            if sum(ch.isdigit() for ch in found) < _DIGIT_RUN_MIN:
-                return found
-            return self._pseudonym_for_field("Код", found)
-
-        return _DIGIT_RUN_RE.sub(_digits, text)
 
     def _mask_related_envelope(self, value: dict[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -1182,7 +1347,10 @@ class Masker:
         metadata_name = ref.get("Metadata")
         uuid = ref.get("Data")
         dotted = self._classify(metadata_name) if metadata_name else None
-        if not force and _is_open_type(dotted, self._policy):
+        # A per-type Mask rule on Description (Наименование) of an open type: the presentation
+        # of its references is that very name.
+        if (not force and dotted not in self._index.name_masked_types
+                and _is_open_type(dotted, self._policy)):
             return ref
 
         presentation = ref.get("Presentation")
