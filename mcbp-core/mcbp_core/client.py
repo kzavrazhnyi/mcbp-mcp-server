@@ -86,6 +86,10 @@ _KEPT_CODES = frozenset({"FTS_DISABLED", "FTS_ERROR"})
 
 log = logging.getLogger("mcbp.api")
 
+# `sensitive_rules`: shortest forced substring accepted, and the most items taken from a base.
+_SENSITIVE_RULE_MIN_LEN = 3
+_SENSITIVE_RULES_MAX = 200
+
 # Retry only idempotent methods: a POST (create_object/push_ai_context) writes through MCBP
 # Plus, and retrying after a partial success could create a duplicate object. A PATCH that
 # creates (`id="new"`) or appends rows is not idempotent either: `patch_object` passes retry=False.
@@ -1090,6 +1094,43 @@ class MCBPClient:
             if isinstance(items, list)
         }
         return sum(len(names) for names in self._readable.values())
+
+    async def sensitive_rules(self) -> list[str] | None:
+        """Always-masked field-name substrings the base's MCBP_ServerAI module declares
+        (`GET /metadata/all?sensitive_rules=true` -> `{"data": {"forced_substrings": [...]}}`).
+
+        Items come back stripped, lower-cased, without duplicates (order kept); an item shorter
+        than `_SENSITIVE_RULE_MIN_LEN` (it would mask half the fields of a base) is dropped and
+        the list is capped at `_SENSITIVE_RULES_MAX` items, with one warning per call.
+        None = the base does not support the parameter: an older module ignores it and answers
+        the plain inventory. Outside the metadata cache: the caller decides the lifetime.
+        Raises what `_request` raises (auth, transport)."""
+        body = await self._request("GET", "/ai/v1/metadata/all",
+                                   params={"sensitive_rules": "true"})
+        data = body.get("data") if isinstance(body, dict) else None
+        items = data.get("forced_substrings") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return None
+        out: list[str] = []
+        short = 0
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            norm = item.strip().lower()
+            if not norm:
+                continue
+            if len(norm) < _SENSITIVE_RULE_MIN_LEN:
+                short += 1
+            elif norm not in out:
+                out.append(norm)
+        capped = len(out) > _SENSITIVE_RULES_MAX
+        if short or capped:
+            log.warning(
+                "sensitive_rules: %d item(s) shorter than %d chars dropped%s",
+                short, _SENSITIVE_RULE_MIN_LEN,
+                f", list capped at {_SENSITIVE_RULES_MAX} of {len(out)}" if capped else "",
+            )
+        return out[:_SENSITIVE_RULES_MAX]
 
     def get_readable_metadata(self) -> dict[str, set[str]] | None:
         """Snapshot of the loaded read-rights map, or None if never loaded on this client.
