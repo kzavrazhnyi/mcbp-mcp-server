@@ -20,7 +20,7 @@
 set -euo pipefail
 
 MCBP_VERSION="0.2.8"
-CORE_VERSION="0.1.35"
+CORE_VERSION="0.1.36"
 TESTPYPI="https://test.pypi.org/simple/"
 
 PREFIX="/opt/mcbp-mcp"

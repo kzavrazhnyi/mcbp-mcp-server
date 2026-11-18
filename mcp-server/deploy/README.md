@@ -57,10 +57,10 @@ sudo -u mcbp python3.11 -m venv /opt/mcbp-mcp/.venv
 ```
 
 The distribution is named `mcbp` and is published on **PyPI** (current: `mcbp 0.2.8`,
-`mcbp-core 0.1.35`).
+`mcbp-core 0.1.36`).
 
 ```bash
-sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install "mcbp[http]==0.2.8" "mcbp-core==0.1.35"
+sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install "mcbp[http]==0.2.8" "mcbp-core==0.1.36"
 ```
 
 - **Pin both versions.** A bare `mcbp[http]` resolves to whatever is newest, which is not always
@@ -74,7 +74,7 @@ To install that candidate, `install-ubuntu.sh --testpypi`, or by hand:
 sudo -u mcbp /opt/mcbp-mcp/.venv/bin/pip install \
   --index-url https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  "mcbp[http]==0.2.8" "mcbp-core==0.1.35"
+  "mcbp[http]==0.2.8" "mcbp-core==0.1.36"
 ```
 
 - **`--extra-index-url https://pypi.org/simple/` is mandatory.** The runtime dependencies —
