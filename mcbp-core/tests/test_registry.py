@@ -193,18 +193,33 @@ def test_get_documents_description_does_not_claim_data_is_universal():
     assert "not guaranteed" in desc
 
 
-def test_get_documents_period_rule_omits_from_unless_latest_is_asked():
-    # No period from the user → no `from`; a 12-month window only for "latest/recent". The old
-    # wide-default text (from="2000-01-01" for every call) must not come back as the rule.
+def test_get_documents_period_rule_omits_from_unless_a_recent_list_is_asked():
+    # No period from the user → no `from`; a 12-month window only for a list of recent ones. The
+    # old wide-default text (from="2000-01-01" for every call) must not come back as the rule.
     spec = TOOLS["get_documents"]
     for text in (spec.description, spec.parameters["properties"]["from"]["description"]):
         assert "12" in text and "recent" in text
-    assert "Omit `from` when the user named no period" in spec.description
-    assert "whole history" in spec.description
+        assert "since 2000-01-01" in text
+        assert "whole history" not in text  # the executor's lower bound is 2000-01-01
+    assert "No period named: omit `from`" in spec.description
     assert "missing `from`" not in spec.description  # the executor fills it, no 422 retry
     assert "останні/нещодавні" in spec.description
     assert "from" not in spec.parameters["required"]
     spec.validate_arguments({"type": "ЗаказПокупателя"})
+
+
+def test_get_documents_latest_document_recipe_is_not_tied_to_the_12_month_window():
+    # A single latest/first document older than 12 months must still be found: the recipe runs
+    # without `from`, and the window applies only to a list of recent documents.
+    spec = TOOLS["get_documents"]
+    desc = spec.description
+    assert "Single latest/first document: omit `from`" in desc
+    assert 'orderby="Дата", desc=true, limit=1 (first: desc=false), no `from`' in desc
+    assert "12-month window only for a list of recent" in desc
+    assert "latest/recent" not in desc
+    from_desc = spec.parameters["properties"]["from"]["description"]
+    assert "single latest/first document" in from_desc
+    assert "12 months back only for a recent list" in from_desc
 
 
 def test_busiest_backend_tools_carry_no_module_version_notes():

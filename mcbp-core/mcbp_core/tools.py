@@ -77,7 +77,7 @@ async def _search_catalog(c: MCBPClient, a: dict) -> Any:
 
 
 # The BSL answers 422 to a document list without `from`; the tool lets the model omit it (no
-# period named = the whole history), so the lower bound is filled in here.
+# period named = since 2000-01-01), so the lower bound is filled in here.
 _DOCUMENTS_EARLIEST_FROM = "2000-01-01"
 
 
@@ -320,7 +320,7 @@ _EXCHANGE_COMMON_EN = (
 
 
 # Short English descriptions of the busiest backend tools, shared by both surfaces: every
-# character here is sent on every LLM step. Keep constraints, drop prose (0.1.37).
+# character here is sent on every LLM step. Keep constraints, drop prose.
 _ONLY = {"type": "boolean",
          "description": "With fields: return only those columns; unknown name gives 422"}
 _AGG_DESC = "Instead of rows: count, sum/avg/min/max:<numeric field>"
@@ -333,16 +333,17 @@ _SEARCH_CATALOG_DESC = (
     "with agg=[\"count\"] and exclude_groups=true."
 )
 _GET_DOCUMENTS_DESC = (
-    "Documents of one type. Dates YYYY-MM-DD. Omit `from` when the user named no period (whole "
-    "history is searched); use a 12-month window only when the user asks for latest/recent "
-    "(останні/нещодавні) items. Rows carry only standard fields (Number, Date, Posted...); `fields` "
-    "adds header attributes (unknown names go to `unknown_fields`). Filter by a reference field "
-    "with `filters` {field: UUID from Ref.Data} (composite type: \"TypeName:UUID\"); find the "
-    "UUID via search_catalog/filter_catalog, field names via describe_metadata. Presentation is "
-    "display text, not a filter key; by number use `q` (digits match without leading zeros), "
-    "check Date. Full data and tabular sections: get_object(type=Metadata, id=Data). Without "
-    "`orderby` row order is arbitrary, not chronological. Latest document: "
-    "orderby=\"Дата\", desc=true, limit=1; \"Дата\" is typical in Russian-named configurations, "
+    "Documents of one type. Dates YYYY-MM-DD. No period named: omit `from` (searches since "
+    "2000-01-01). Single latest/first document: omit `from`, use the recipe below. A 12-month "
+    "window only for a list of recent (останні/нещодавні) documents. Rows carry only standard "
+    "fields (Number, Date, Posted...); `fields` adds header attributes (unknown names go to "
+    "`unknown_fields`). Filter by a reference field with `filters` {field: UUID from Ref.Data} "
+    "(composite type: \"TypeName:UUID\"); find the UUID via search_catalog/filter_catalog, "
+    "field names via describe_metadata. Presentation is display text, not a filter key; by "
+    "number use `q` (digits match without leading zeros), check Date. Full data and tabular "
+    "sections: get_object(type=Metadata, id=Data). Without `orderby` row order is arbitrary, "
+    "not chronological. Latest document: orderby=\"Дата\", desc=true, limit=1 (first: "
+    "desc=false), no `from`; \"Дата\" is typical in Russian-named configurations, "
     "not guaranteed: a wrong name gives 422 BAD_PARAMETER naming the real field, retry with it, "
     "else describe_metadata with q=\"дата\". `cursor` does not work with `orderby` or `agg`. "
     "For how many/sum/average/max/min use `agg` (e.g. [\"count\"], [\"sum:СуммаДокумента\"]) "
@@ -428,9 +429,9 @@ TOOLS: dict[str, ToolSpec] = {
         _params(
             {"type": {"type": "string", "description": "Document type, e.g. ЗаказПокупателя"},
              "from": {"type": "string",
-                      "description": "Period start YYYY-MM-DD. Omit when the user named no "
-                                     "period (whole history); 12 months back only for "
-                                     "latest/recent"},
+                      "description": "Period start YYYY-MM-DD. Omit when no period is named "
+                                     "(since 2000-01-01) and for a single latest/first "
+                                     "document; 12 months back only for a recent list"},
              "to": {"type": "string", "description": "Period end YYYY-MM-DD; omitted = open"},
              "filters": {"type": "object", "description": "{field: value}; reference = UUID"},
              "fields": {"type": "array", "items": {"type": "string"},
@@ -548,7 +549,8 @@ TOOLS: dict[str, ToolSpec] = {
                          "description": "{field: value}, e.g. {\"Покупатель\": true}"},
              "orderby": {"type": "string", "description": "Sort field"},
              "desc": {"type": "boolean", "default": False},
-             "exclude_groups": {"type": "boolean", "default": False},
+             "exclude_groups": {"type": "boolean", "default": False,
+                                "description": "Skip folder groups (IsFolder items)"},
              "fields": {"type": "array", "items": {"type": "string"},
                         "description": "Extra attributes per row"},
              "only": _ONLY,
@@ -565,7 +567,7 @@ TOOLS: dict[str, ToolSpec] = {
         "get_object",
         "ЄДИНИЙ спосіб отримати РЕАЛЬНІ ЗНАЧЕННЯ реквізитів одного конкретного об'єкта (усі "
         "реквізити + табличні частини). Списки (search_catalog/filter_catalog/get_documents) і "
-        "структурні інструменти (describe_metadata/get_schema/list_metadata) НЕ містять значень "
+        "структурні інструменти (describe_metadata/list_metadata) НЕ містять значень "
         "реквізитів — не роби висновок «поле порожнє» доти, доки не перевірив саме тут. "
         "Відкриває БУДЬ-ЯКЕ посилання {Presentation, Data, Metadata} з результату — Ref рядка "
         "списку, Recorder/Регистратор, документ у рядку регістру, рядок табличної частини, "
@@ -599,7 +601,7 @@ TOOLS: dict[str, ToolSpec] = {
         description_en=(
             "The ONLY way to get the REAL VALUES of a single specific object's attributes (all "
             "attributes + tabular sections). Lists (search_catalog/filter_catalog/get_documents) "
-            "and structure tools (describe_metadata/get_schema/list_metadata) do NOT contain "
+            "and structure tools (describe_metadata/list_metadata) do NOT contain "
             "attribute values — never conclude 'the field is empty' until you've checked here. "
             "Opens ANY reference {Presentation, Data, Metadata} found in a result — a list "
             "row's Ref, Recorder/Регистратор, a document in a register row, a tabular-section "

@@ -115,7 +115,7 @@ async def test_get_documents_defaults_limit_and_desc_bool(client):
 
 @pytest.mark.parametrize("args", [{}, {"from": ""}, {"from": None}])
 async def test_get_documents_without_from_sends_the_earliest_bound(client, args):
-    # The BSL answers 422 to a document list without `from`; no period = the whole history.
+    # The BSL answers 422 to a document list without `from`; no period = since 2000-01-01.
     await TOOLS["get_documents"].executor(client, {"type": "X", **args})
     _, kw = client.calls[0]
     assert kw["frm"] == "2000-01-01"
