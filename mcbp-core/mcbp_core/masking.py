@@ -298,12 +298,9 @@ def _contains_any(normalized: str, substrings: tuple[str, ...]) -> bool:
     return any(s and s in normalized for s in substrings)
 
 
-# Short codes of the forced keys: as a word of a field name they must be the WHOLE word
-# ("ИНН", "КодИНН", "ИННФизЛица"), never just its start ("Inner", "Innovation").
-_FORCED_ABBREVIATIONS = frozenset({
-    "инн", "інн", "ипн", "іпн", "inn", "кпп", "kpp", "рнокпп",
-    "едрпоу", "єдрпоу", "edrpou", "снилс", "snils", "огрн", "ogrn",
-})
+# Forced keys that open English words when they START one ("Inner", "Innovation", "Beginning"):
+# as a word of a field name they must END a word ("INN", "InnCode", "КлиентInn").
+_FORCED_WORD_ENDS_ONLY = frozenset({"inn"})
 
 
 def _name_words(name: str) -> list[str]:
@@ -336,35 +333,54 @@ def _forced_key(raw: str) -> str:
     return "".join(ch for ch in raw.lower() if ch.isalnum())
 
 
+def _capital_runs(name: str) -> list[str]:
+    """Every run of 2+ capitals in `name`, whole ("ИНН" in "ИННконтрагента", "ИННФ" in
+    "ИННФизЛица"): an acronym run has no case step inside it to split by."""
+    runs: list[str] = []
+    cur = ""
+    for ch in name:
+        if ch.isupper():
+            cur += ch
+            continue
+        if len(cur) > 1:
+            runs.append(cur.lower())
+        cur = ""
+    if len(cur) > 1:
+        runs.append(cur.lower())
+    return runs
+
+
 def _has_forced_word(name: str, keys: tuple[str, ...]) -> bool:
-    """True when a forced key starts at a word of `name` (it may run on over the next words:
-    "датарождения" in "ДатаРождения"); a short code (`_FORCED_ABBREVIATIONS`) must also end at
-    a word end. A word with no case step to split by - an all-capital run ("РНОКПП") or a name
-    with no capital at all ("contactphone") - is matched by plain substring, as before."""
+    """True when a forced key starts or ends at a word boundary of `name` (it may span words:
+    "датарождения" in "ДатаРождения", "phone" in "Mobilephone"); a key of
+    `_FORCED_WORD_ENDS_ONLY` must end at a word end. A run of capitals ("РНОКПП",
+    "ИННконтрагента") and a name with no capital at all ("contactphone") are matched by plain
+    substring. A key only inside a word or across a word step stays unmatched: "ипн" in
+    "ТипНоменклатуры", "инн" in "Длинное"."""
     words = _name_words(name)
     if not words:
         return False
-    lowered = [w.lower() for w in words]
-    joined = "".join(lowered)
+    joined = "".join(w.lower() for w in words)
     starts: list[int] = []
-    ends: set[int] = set()
+    ends: list[int] = []
     pos = 0
-    for w in lowered:
+    for w in words:
         starts.append(pos)
         pos += len(w)
-        ends.add(pos)
-    caseless_name = not any(ch.isupper() for ch in name)
-    caseless = [lw for w, lw in zip(words, lowered) if caseless_name or w.isupper()]
+        ends.append(pos)
+    caseless = [joined] if not any(ch.isupper() for ch in name) else _capital_runs(name)
     for raw in keys:
         key = _forced_key(raw)
         if not key:
             continue
-        if any(key in lw for lw in caseless):
+        if any(key in run for run in caseless):
             return True
-        whole = key in _FORCED_ABBREVIATIONS
-        for start in starts:
-            if joined.startswith(key, start) and (not whole or start + len(key) in ends):
-                return True
+        if any(joined.endswith(key, 0, end) for end in ends):
+            return True
+        if key not in _FORCED_WORD_ENDS_ONLY and any(
+            joined.startswith(key, start) for start in starts
+        ):
+            return True
     return False
 
 
