@@ -94,10 +94,10 @@ _DEFAULT_OPEN_FIELD_NAMES: tuple[str, ...] = (
     "Period", "Период", "Період",
 )
 
-# Keys of a field name that force masking no matter what — identifying data and free text,
-# per the goal. A key matches at a WORD of the field name (see `_has_forced_word`: "ипн" in
-# "КодИПН", not in "ТипНоменклатуры"); an additional property's name (free text) still
-# matches by plain substring.
+# Substrings of a field name that force masking no matter what — identifying data and free
+# text, per the goal. A field name skips only an occurrence across a CamelCase step ("ипн" in
+# "ТипНоменклатуры") or inside a listed word ("инн" in "Длинное"), see `_has_forced_word`; an
+# additional property's name (free text) matches by plain substring.
 _DEFAULT_FORCED_SUBSTRINGS: tuple[str, ...] = (
     "инн", "інн", "ипн", "іпн", "inn",
     "кпп", "kpp", "рнокпп",
@@ -298,89 +298,68 @@ def _contains_any(normalized: str, substrings: tuple[str, ...]) -> bool:
     return any(s and s in normalized for s in substrings)
 
 
-# Forced keys that open English words when they START one ("Inner", "Innovation", "Beginning"):
-# as a word of a field name they must END a word ("INN", "InnCode", "КлиентInn").
-_FORCED_WORD_ENDS_ONLY = frozenset({"inn"})
+# Words holding "inn"/"инн" that are not a tax number ("Inner", "Длинное"); written in any
+# case but all capitals (an acronym run "INNER" may be INN + ER), they do not count for a key.
+_FORCED_KEY_EXCEPTION_WORDS: tuple[str, ...] = (
+    "inner", "dinner", "innovation", "beginning", "длинн",
+)
 
 
-def _name_words(name: str) -> list[str]:
-    """A 1C field name split into its words: at CamelCase steps (an acronym run ends before
-    its last capital when a lowercase letter follows: "ИННФизЛица" -> ИНН|Физ|Лица), at
-    letter/digit changes, and at any non-alphanumeric character (space, "_", "-")."""
-    words: list[str] = []
-    cur = ""
-    for ch in name:
-        if not ch.isalnum():
-            if cur:
-                words.append(cur)
-            cur = ""
-            continue
-        if cur:
-            prev = cur[-1]
-            if ch.isdigit() != prev.isdigit() or (ch.isupper() and prev.islower()):
-                words.append(cur)
-                cur = ""
-            elif ch.islower() and prev.isupper() and len(cur) > 1 and cur[-2].isupper():
-                words.append(cur[:-1])
-                cur = prev
-        cur += ch
-    if cur:
-        words.append(cur)
-    return words
-
-
-def _forced_key(raw: str) -> str:
-    return "".join(ch for ch in raw.lower() if ch.isalnum())
-
-
-def _capital_runs(name: str) -> list[str]:
-    """Every run of 2+ capitals in `name`, whole ("ИНН" in "ИННконтрагента", "ИННФ" in
-    "ИННФизЛица"): an acronym run has no case step inside it to split by."""
-    runs: list[str] = []
-    cur = ""
-    for ch in name:
-        if ch.isupper():
-            cur += ch
-            continue
-        if len(cur) > 1:
-            runs.append(cur.lower())
-        cur = ""
-    if len(cur) > 1:
-        runs.append(cur.lower())
-    return runs
+def _case_steps(chars: list[str]) -> set[int]:
+    """Positions of a capital right after a lowercase letter ("Тип|Номенклатуры") - the one
+    unambiguous CamelCase step (where a capital run ends - "ВИПНалог" - is not)."""
+    return {p for p in range(1, len(chars)) if chars[p].isupper() and chars[p - 1].islower()}
 
 
 def _has_forced_word(name: str, keys: tuple[str, ...]) -> bool:
-    """True when a forced key starts or ends at a word boundary of `name` (it may span words:
-    "датарождения" in "ДатаРождения", "phone" in "Mobilephone"); a key of
-    `_FORCED_WORD_ENDS_ONLY` must end at a word end. A run of capitals ("РНОКПП",
-    "ИННконтрагента") and a name with no capital at all ("contactphone") are matched by plain
-    substring. A key only inside a word or across a word step stays unmatched: "ипн" in
-    "ТипНоменклатуры", "инн" in "Длинное"."""
-    words = _name_words(name)
-    if not words:
+    """True when a forced key is a substring of the field name (whitespace-stripped,
+    lowercased), as plain substring matching would say - except an occurrence that crosses a
+    CamelCase step while it neither starts nor ends at a word boundary ("ипн" in
+    "ТипНоменклатуры" does not count, "датарождения" in "ДатаРождения" does), and one inside a
+    word of `_FORCED_KEY_EXCEPTION_WORDS` not written in all capitals ("инн" in "Длинное"). Any
+    other occurrence of any key still masks."""
+    chars = [ch for ch in name if not ch.isspace()]
+    text = "".join(chars).lower()
+    if not text:
         return False
-    joined = "".join(w.lower() for w in words)
-    starts: list[int] = []
-    ends: list[int] = []
-    pos = 0
-    for w in words:
-        starts.append(pos)
-        pos += len(w)
-        ends.append(pos)
-    caseless = [joined] if not any(ch.isupper() for ch in name) else _capital_runs(name)
+    steps = _case_steps(chars)
+    n = len(chars)
+    # Word starts: the CamelCase steps, plus the last capital of a run before a lowercase
+    # letter ("ЮР|Электронная", "ИНН|Физ").
+    starts = steps | {
+        p for p in range(1, n - 1)
+        if chars[p].isupper() and chars[p - 1].isupper() and chars[p + 1].islower()
+    }
+
+    def at_start(i: int) -> bool:
+        return i == 0 or i in starts or not chars[i - 1].isalnum() or (
+            chars[i - 1].isdigit() != chars[i].isdigit())
+
+    def at_end(j: int) -> bool:
+        return j == n or j in starts or not chars[j].isalnum() or (
+            chars[j - 1].isdigit() != chars[j].isdigit())
+
+    excepted: list[tuple[int, int]] = []
+    for word in _FORCED_KEY_EXCEPTION_WORDS:
+        i = text.find(word)
+        while i >= 0:
+            if not all(ch.isupper() for ch in chars[i:i + len(word)]):
+                excepted.append((i, i + len(word)))
+            i = text.find(word, i + 1)
+
     for raw in keys:
-        key = _forced_key(raw)
+        key = _normalize_field_name(raw)
         if not key:
             continue
-        if any(key in run for run in caseless):
-            return True
-        if any(joined.endswith(key, 0, end) for end in ends):
-            return True
-        if key not in _FORCED_WORD_ENDS_ONLY and any(
-            joined.startswith(key, start) for start in starts
-        ):
-            return True
+        i = text.find(key)
+        while i >= 0:
+            j = i + len(key)
+            crosses = any(i < p < j for p in steps)
+            if (not crosses or at_start(i) or at_end(j)) and not any(
+                a <= i and j <= b for a, b in excepted
+            ):
+                return True
+            i = text.find(key, i + 1)
     return False
 
 

@@ -1,4 +1,5 @@
-"""Forced field-name keys match at the words of a 1C field name, not as any substring."""
+"""Forced field-name keys: plain substring, minus an occurrence across a CamelCase step or inside
+a listed word - so exactly `DELIBERATELY_OPENED` opens compared with the old substring rule."""
 
 from __future__ import annotations
 
@@ -14,16 +15,19 @@ STILL_MASKED = (
     "ИННконтрагента", "ИПНпокупателя", "ІПНклієнта", "КППпокупателя", "ЕДРПОУкод", "ОГРНип",
     "РНОКППфо", "ИННфл", "INNs",
     "Телефон", "ТелефонМобильный", "НомерТелефона", "КонтактныйТелефон", "Телефон2",
-    "Email", "EMail", "E-mail", "e_mail", "АдресЭлектроннойПочты", "ЭлектроннаяПочта",
+    "Email", "EMail", "E-mail", "АдресЭлектроннойПочты", "ЭлектроннаяПочта",
     "ЕлектроннаПошта", "Адрес", "Адреса", "ЮридическийАдрес", "АдресДоставки", "Адресат",
     "ДатаРождения", "МестоРождения", "ДатаНародження", "ДеньРождения",
     "Паспорт", "ПаспортныеДанные", "НомерПаспорта",
     "Комментарий", "Коментар", "Примечание", "Примітка", "Примечаниеклиента",
     "Phone", "MobilePhone", "Telephone", "Address", "EmailAddress", "BirthDate", "Birthday",
     "DateOfBirth", "Comment", "Comments", "Note", "Notes", "Passport", "Denote", "Footnote",
-    # A key at the END of a word.
+    # A key at the end of / inside a lowercase word.
     "Мобтелефон", "Радиотелефон", "Юрадрес", "Фактадрес", "Mobilephone", "Cellphone",
     "Smartphone", "Homephone", "Workphone", "Useremail", "Workemail",
+    "Номертелефона", "Серияпаспорта", "Юрадресконтрагента", "Кодиннфизлица", "Местарождения",
+    "Workphones", "Ipaddresses", "Billingaddresses", "Usercomments", "Footnotes", "INNER",
+    "ВИПНалог", "ЮРЭлектроннаяПочта", "мобЭлектроннаяПочтаcode",
     # No case step to split by: plain substring.
     "contactphone", "кодинн", "PHONE_NUMBER", "MOBILEPHONE",
 )
@@ -66,6 +70,19 @@ SAMPLE = STILL_MASKED + OPENED + (
     "ОсновнойБанковскийСчет", "ВидЗапасов", "ХарактеристикаНоменклатуры", "Партия",
     "СтруктурнаяЕдиница", "Ячейка", "СерияНоменклатуры", "ДатаОтгрузки", "СрокОплаты",
     "ПодписьРуководителя",
+    # Review probes.
+    "Номертелефона", "НомерТелефона", "Мобтелефоны", "Контактныйтелефон", "Номерателефонов",
+    "Workphones", "Mobilephones", "Ipaddresses", "IPAddresses", "Emailaddresses", "Workemails",
+    "Юрадресконтрагента", "Адресдоставки", "Фактадресклиента", "Номерпаспорта", "Серияпаспорта",
+    "СерияПаспорта", "Данныепаспортафизлица", "Кодинн", "Кодиннфизлица", "Датарождениясотрудника",
+    "Местарождения", "Месторождения", "Комментарийменеджера", "Текстпримечания",
+    "Текстпримечаниякраткий", "Subnotes", "Footnotes", "Usercomments", "Електроннапоштаклієнта",
+    "Mobiletelephones", "Номеркпп", "Кодкппконтрагента", "Кодедрпоуклиента", "Phonenumbers",
+    "Homephonenumber", "Mailaddressline", "Deliveryaddressline", "Billingaddresses", "Пасспорт",
+    "ИННКонтрагента", "КПП_Контрагента", "ВИПНалог", "INNER", "ТипНоменклатурыИПН", "NOTES",
+    "ЗАМЕТКА", "SNOTE", "Notebook", "Denote", "Microphone", "Keynote", "Ринн", "Phonetic",
+    "Addressee", "Commentator", "Banknote", "Notepad", "Notes", "NoteText", "Notification",
+    "Notional", "Notarius", "Нотариус",
 )
 
 
@@ -77,6 +94,28 @@ def _old_rule(name: str) -> bool:
 def test_only_the_deliberate_names_open_against_the_old_substring_rule() -> None:
     opened = {n for n in SAMPLE if _old_rule(n) and not is_field_forced(DEFAULT_POLICY, n)}
     assert opened == DELIBERATELY_OPENED
+
+
+_PREFIXES = ("", "Код", "код", "Моб", "моб", "Mobile", "mobile", "IP", "Юр", "ЮР", "Work", "X",
+             "Доп", "1", "_", "Основной", "ФЛ", "Контрагент")
+_SUFFIXES = ("", "Контрагента", "контрагента", "Code", "code", "ФЛ", "2", "_x", "Номер", "Ы",
+             "а", "ов", "s", "Physical", "physical", "ЮЛ", "Лица", "лица", "ФизЛица", "Inn")
+_CAMEL_FORMS = ("ДатаРождения", "датаРождения", "ЭлектроннаяПочта", "ДеньРождения",
+                "DateOfBirth", "BirthDate", "E-Mail", "АдресЭлектроннойПочты")
+
+
+def _generated_names() -> set[str]:
+    forms = set(_CAMEL_FORMS)
+    for key in DEFAULT_POLICY.forced_mask_substrings:
+        forms |= {key, key.upper(), key[:1].upper() + key[1:]}
+    return {p + f + x for f in forms for p in _PREFIXES for x in _SUFFIXES}
+
+
+def test_no_generated_key_name_opens_against_the_old_substring_rule() -> None:
+    names = _generated_names()
+    assert len(names) > 10000
+    opened = sorted(n for n in names if _old_rule(n) and not is_field_forced(DEFAULT_POLICY, n))
+    assert opened == []
 
 
 @pytest.mark.parametrize("name", STILL_MASKED)
@@ -110,7 +149,7 @@ def test_override_key_matches_at_a_word() -> None:
     policy = MaskingPolicy.from_dict({"forced_mask_substrings": ["Ключ"]})
     assert is_field_forced(policy, "АпиКлюч")
     assert is_field_forced(policy, "КлючДоступа")
-    assert not is_field_forced(policy, "Отключен")
+    assert is_field_forced(policy, "Отключен")  # a substring, as with every key
 
 
 CATALOG = "Справочник.Контрагенты"
