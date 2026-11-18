@@ -94,16 +94,18 @@ _DEFAULT_OPEN_FIELD_NAMES: tuple[str, ...] = (
     "Period", "Период", "Період",
 )
 
-# Case-insensitive substrings (whitespace-stripped, lowercased) of a field name that
-# force masking no matter what — identifying data and free text, per the goal.
+# Keys of a field name that force masking no matter what — identifying data and free text,
+# per the goal. A key matches at a WORD of the field name (see `_has_forced_word`: "ипн" in
+# "КодИПН", not in "ТипНоменклатуры"); an additional property's name (free text) still
+# matches by plain substring.
 _DEFAULT_FORCED_SUBSTRINGS: tuple[str, ...] = (
     "инн", "інн", "ипн", "іпн", "inn",
-    "кпп", "kpp",
+    "кпп", "kpp", "рнокпп",
     "едрпоу", "єдрпоу", "edrpou",
     "снилс", "snils",
     "огрн", "ogrn",
     "паспорт", "passport",
-    "телефон", "phone",
+    "телефон", "phone", "telephone",
     "email", "e-mail",
     "электроннаяпочта", "електроннапошта",
     "адрес", "адреса", "address",
@@ -294,6 +296,76 @@ def _normalize_field_name(name: str) -> str:
 
 def _contains_any(normalized: str, substrings: tuple[str, ...]) -> bool:
     return any(s and s in normalized for s in substrings)
+
+
+# Short codes of the forced keys: as a word of a field name they must be the WHOLE word
+# ("ИНН", "КодИНН", "ИННФизЛица"), never just its start ("Inner", "Innovation").
+_FORCED_ABBREVIATIONS = frozenset({
+    "инн", "інн", "ипн", "іпн", "inn", "кпп", "kpp", "рнокпп",
+    "едрпоу", "єдрпоу", "edrpou", "снилс", "snils", "огрн", "ogrn",
+})
+
+
+def _name_words(name: str) -> list[str]:
+    """A 1C field name split into its words: at CamelCase steps (an acronym run ends before
+    its last capital when a lowercase letter follows: "ИННФизЛица" -> ИНН|Физ|Лица), at
+    letter/digit changes, and at any non-alphanumeric character (space, "_", "-")."""
+    words: list[str] = []
+    cur = ""
+    for ch in name:
+        if not ch.isalnum():
+            if cur:
+                words.append(cur)
+            cur = ""
+            continue
+        if cur:
+            prev = cur[-1]
+            if ch.isdigit() != prev.isdigit() or (ch.isupper() and prev.islower()):
+                words.append(cur)
+                cur = ""
+            elif ch.islower() and prev.isupper() and len(cur) > 1 and cur[-2].isupper():
+                words.append(cur[:-1])
+                cur = prev
+        cur += ch
+    if cur:
+        words.append(cur)
+    return words
+
+
+def _forced_key(raw: str) -> str:
+    return "".join(ch for ch in raw.lower() if ch.isalnum())
+
+
+def _has_forced_word(name: str, keys: tuple[str, ...]) -> bool:
+    """True when a forced key starts at a word of `name` (it may run on over the next words:
+    "датарождения" in "ДатаРождения"); a short code (`_FORCED_ABBREVIATIONS`) must also end at
+    a word end. A word with no case step to split by - an all-capital run ("РНОКПП") or a name
+    with no capital at all ("contactphone") - is matched by plain substring, as before."""
+    words = _name_words(name)
+    if not words:
+        return False
+    lowered = [w.lower() for w in words]
+    joined = "".join(lowered)
+    starts: list[int] = []
+    ends: set[int] = set()
+    pos = 0
+    for w in lowered:
+        starts.append(pos)
+        pos += len(w)
+        ends.add(pos)
+    caseless_name = not any(ch.isupper() for ch in name)
+    caseless = [lw for w, lw in zip(words, lowered) if caseless_name or w.isupper()]
+    for raw in keys:
+        key = _forced_key(raw)
+        if not key:
+            continue
+        if any(key in lw for lw in caseless):
+            return True
+        whole = key in _FORCED_ABBREVIATIONS
+        for start in starts:
+            if joined.startswith(key, start) and (not whole or start + len(key) in ends):
+                return True
+    return False
 
 
 def _matches_pattern(normalized: str, patterns: tuple[str, ...]) -> bool:
@@ -655,7 +727,7 @@ def is_field_forced(policy: MaskingPolicy, field_name: str, context: str | None 
     tabular-section field, "<type>.<section>"; standard attributes under any of their names)."""
     normalized = _normalize_field_name(field_name)
     return bool(normalized) and (
-        _contains_any(normalized, policy.forced_mask_substrings)
+        _has_forced_word(field_name, policy.forced_mask_substrings)
         or _matches_pattern(normalized, policy.force_mask_fields)
         or _matches_type_field(context, normalized, policy.force_mask_type_fields)
     )
@@ -1037,7 +1109,10 @@ class Masker:
 
     def _property_always_masked(self, name: str, context: str | None) -> bool:
         normalized = _normalize_field_name(name)
-        return self._is_forced_name(normalized) or _matches_marked_rule(
+        # A property name is free text with no CamelCase to split by: plain substring match.
+        forced = _matches_pattern(normalized, self._policy.force_mask_fields) or _contains_any(
+            normalized, self._policy.forced_mask_substrings)
+        return (bool(normalized) and forced) or _matches_marked_rule(
             context, normalized, self._policy.force_mask_type_fields, ADDITIONAL_MARKER)
 
     def _apply_section_rules(
@@ -1062,7 +1137,7 @@ class Masker:
                                    self._policy.force_mask_type_fields):
                 out[k] = self._force_mask(k, v)
             elif (can_open and not isinstance(v, (dict, list))
-                  and not self._is_forced_name(normalized)
+                  and not self._is_forced_name(normalized, k)
                   and not (prop_name is not None and not explicit_open
                            and _looks_like_long_number(v))
                   and _matches_type_field(section_context, normalized,
@@ -1070,10 +1145,10 @@ class Masker:
                 out[k] = v
         return out
 
-    def _is_forced_name(self, normalized: str) -> bool:
+    def _is_forced_name(self, normalized: str, name: str) -> bool:
         return bool(normalized) and (
             _matches_pattern(normalized, self._policy.force_mask_fields)
-            or _contains_any(normalized, self._policy.forced_mask_substrings)
+            or _has_forced_word(name, self._policy.forced_mask_substrings)
         )
 
     def _property_row(self, row: dict[str, Any]) -> str | None:
@@ -1298,7 +1373,7 @@ class Masker:
         normalized = _normalize_field_name(key) if key else ""
         forced = bool(key) and (
             _matches_pattern(normalized, self._policy.force_mask_fields)
-            or _contains_any(normalized, self._policy.forced_mask_substrings)
+            or _has_forced_word(key, self._policy.forced_mask_substrings)
         )
         if forced:
             return self._pseudonym_for_field(key, value)
