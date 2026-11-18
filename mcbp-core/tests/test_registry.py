@@ -189,8 +189,32 @@ def test_get_documents_description_does_not_claim_data_is_universal():
     # an arbitrary base (onec-universality) — the description must explicitly flag it as typical,
     # not the only possibility.
     desc = TOOLS["get_documents"].description
-    assert "типовим" in desc or "типове" in desc
-    assert "не гарантією" in desc or "не гарантія" in desc
+    assert "typical" in desc
+    assert "not guaranteed" in desc
+
+
+def test_get_documents_period_rule_omits_from_unless_latest_is_asked():
+    # No period from the user → no `from`; a 12-month window only for "latest/recent". The old
+    # wide-default text (from="2000-01-01" for every call) must not come back as the rule.
+    spec = TOOLS["get_documents"]
+    for text in (spec.description, spec.parameters["properties"]["from"]["description"]):
+        assert "12" in text and "recent" in text
+    assert "Omit `from` when the user named no period" in spec.description
+    assert "whole history" in spec.description
+    assert "missing `from`" not in spec.description  # the executor fills it, no 422 retry
+    assert "останні/нещодавні" in spec.description
+    assert "from" not in spec.parameters["required"]
+    spec.validate_arguments({"type": "ЗаказПокупателя"})
+
+
+def test_busiest_backend_tools_carry_no_module_version_notes():
+    import json
+
+    for name in ("get_register_records", "get_documents", "filter_catalog", "describe_metadata",
+                 "get_register_balance", "search_catalog"):
+        spec = TOOLS[name]
+        blob = spec.description + json.dumps(spec.parameters, ensure_ascii=False)
+        assert "module ≥" not in blob and "модуль ≥" not in blob, name
 
 
 def test_register_balance_schema_has_accounting_arguments():

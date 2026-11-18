@@ -76,9 +76,14 @@ async def _search_catalog(c: MCBPClient, a: dict) -> Any:
     )
 
 
+# The BSL answers 422 to a document list without `from`; the tool lets the model omit it (no
+# period named = the whole history), so the lower bound is filled in here.
+_DOCUMENTS_EARLIEST_FROM = "2000-01-01"
+
+
 async def _get_documents(c: MCBPClient, a: dict) -> Any:
     return await c.list_documents(
-        type_=a["type"], frm=a.get("from"), to=a.get("to"),
+        type_=a["type"], frm=a.get("from") or _DOCUMENTS_EARLIEST_FROM, to=a.get("to"),
         cursor=a.get("cursor"), limit=a.get("limit", 100),
         filters=a.get("filters"), fields=a.get("fields"),
         orderby=a.get("orderby"), desc=bool(a.get("desc", False)),
@@ -314,6 +319,87 @@ _EXCHANGE_COMMON_EN = (
 )
 
 
+# Short English descriptions of the busiest backend tools, shared by both surfaces: every
+# character here is sent on every LLM step. Keep constraints, drop prose (0.1.37).
+_ONLY = {"type": "boolean",
+         "description": "With fields: return only those columns; unknown name gives 422"}
+_AGG_DESC = "Instead of rows: count, sum/avg/min/max:<numeric field>"
+
+_SEARCH_CATALOG_DESC = (
+    "Search catalog items by name/code. Rows carry only standard fields (Ref, Code, "
+    "Description, IsFolder, Parent, DeletionMark); `fields` adds attributes (unknown names go to "
+    "`unknown_fields`, not an error). An empty field in a row does not mean the attribute is "
+    "empty: read values with get_object by Ref. To count, do not count rows: use filter_catalog "
+    "with agg=[\"count\"] and exclude_groups=true."
+)
+_GET_DOCUMENTS_DESC = (
+    "Documents of one type. Dates YYYY-MM-DD. Omit `from` when the user named no period (whole "
+    "history is searched); use a 12-month window only when the user asks for latest/recent "
+    "(останні/нещодавні) items. Rows carry only standard fields (Number, Date, Posted...); `fields` "
+    "adds header attributes (unknown names go to `unknown_fields`). Filter by a reference field "
+    "with `filters` {field: UUID from Ref.Data} (composite type: \"TypeName:UUID\"); find the "
+    "UUID via search_catalog/filter_catalog, field names via describe_metadata. Presentation is "
+    "display text, not a filter key; by number use `q` (digits match without leading zeros), "
+    "check Date. Full data and tabular sections: get_object(type=Metadata, id=Data). Without "
+    "`orderby` row order is arbitrary, not chronological. Latest document: "
+    "orderby=\"Дата\", desc=true, limit=1; \"Дата\" is typical in Russian-named configurations, "
+    "not guaranteed: a wrong name gives 422 BAD_PARAMETER naming the real field, retry with it, "
+    "else describe_metadata with q=\"дата\". `cursor` does not work with `orderby` or `agg`. "
+    "For how many/sum/average/max/min use `agg` (e.g. [\"count\"], [\"sum:СуммаДокумента\"]) "
+    "instead of rows; the answer is {\"aggregates\":[...]}."
+)
+_REGISTER_BALANCE_DESC = (
+    "Balance/turnovers of an accumulation or accounting register. Dimension names come from "
+    "describe_metadata, never guessed; reference values are UUIDs from Ref.Data, e.g. "
+    "filters={\"Контрагент\":\"<uuid>\"}. ACCUMULATION `table`: balance (default, at `on`), "
+    "turnovers (turnover-type registers allow only these), balance_and_turnovers; turnover "
+    "tables need `from`, groupby Period:month etc. ACCOUNTING (AccountingRegisters): balance "
+    "(at `on`), turnovers, balance_and_turnovers (trial balance), drcr_turnovers (Dr->Cr); the "
+    "last three need `from`, no `to` = today. account=[\"361\"] includes subaccounts; one row "
+    "per account unless groupby=[\"ExtDimension1\"] (`ext_dimension_types` names each "
+    "ExtDimensionN); drcr_turnovers uses ExtDimensionDr1..N/ExtDimensionCr1..N. "
+    "resources=[\"<main amount>\"] keeps the answer small. Postings: get_register_records. An "
+    "'MCBP_AI outdated' error means the configuration needs an update."
+)
+_DESCRIBE_METADATA_DESC = (
+    "Structure of one metadata object, no record values: attributes with types; registers: "
+    "dimensions/resources/attributes; enums: values; accounting registers also "
+    "chart_of_accounts, correspondence and query_fields (names such as AccountDr, "
+    "ExtDimensionCr1, <Dimension>Dr for filters/groupby). Use it for exact field names before "
+    "filtering; never guess them. Tabular sections come as a list (name, synonym, attribute "
+    "count); pass tabular_section=\"<name>\" for their attributes. Without `q` all header "
+    "attributes come back (100+ on a document); `q` narrows by internal name or Ukrainian "
+    "synonym; no match returns `available_names`."
+)
+_FILTER_CATALOG_DESC = (
+    "Server-side catalog selection filtered and sorted by any fields; use it instead of "
+    "search_catalog to filter/sort by a field. `filters` {field: value}: equality, a string "
+    "with % is LIKE; field names from describe_metadata. Rows carry standard fields plus "
+    "`fields` (unknown names go to `unknown_fields`); an empty field in a row does not mean the "
+    "attribute is empty: read values with get_object. For how many/sum/average/max/min use "
+    "`agg` (answer {\"aggregates\":[...]}), never count rows. Item count: agg=[\"count\"] with "
+    "exclude_groups=true; for a hierarchical catalog count again without exclude_groups and "
+    "report the difference as groups."
+)
+_REGISTER_RECORDS_DESC = (
+    "Rows of an information register (no Ref: only this tool reads them), or raw movements of "
+    "an accumulation register (computed balance: get_register_balance). `from`/`to` "
+    "YYYY-MM-DD, both optional (open bounds); passed for a non-periodic register: 422 "
+    "BAD_PARAMETER. `filters` {field: value} on any dimension/resource/attribute or standard "
+    "field (internal name or English alias Period/Recorder/Active/LineNumber/RecordType); "
+    "reference = UUID from Ref.Data; % in a string = LIKE. Unknown field in filters/orderby: 422 "
+    "BAD_PARAMETER listing the real fields. Without `orderby` a periodic register comes newest "
+    "first (latest record: limit=1). No cursor: `truncated: true` means narrow the filter. "
+    "Totals/comparisons: always `agg` (+`groupby`), e.g. agg=[\"sum:*\"], "
+    "groupby=[\"<dimension>\",\"Period:month\"]; answer {\"aggregates\":[...]}, inactive "
+    "movements excluded, a balance register splits groups by RecordType "
+    "(`record_type_split: true`). ACCOUNTING register: rows are postings (AccountDr/AccountCr, "
+    "ExtDimensionDr1..); `from` or filters.Recorder is REQUIRED; filters.AccountDr=\"361\" "
+    "includes subaccounts; filters.Account / filters.ExtDimension = either side / any position. "
+    "Per-account totals: get_register_balance table=turnovers (agg groups by the exact account)."
+)
+
+
 # --- Registry ---
 # ORDER MATTERS: MockProvider calls TOOLS[0], so search_catalog must stay first.
 # Introspection tools were appended at the end; the "structure first" priority is set in
@@ -322,130 +408,49 @@ _EXCHANGE_COMMON_EN = (
 TOOLS: dict[str, ToolSpec] = {
     "search_catalog": ToolSpec(
         "search_catalog",
-        "Шукає елементи довідника BAS (контрагенти, товари, користувачі тощо). "
-        "Кожен рядок містить ЛИШЕ стандартні поля (Ref, Code, Description, IsFolder, Parent, "
-        "DeletionMark) — БЕЗ значень інших реквізитів. `fields` лише ДОДАЄ вказані реквізити до "
-        "цього набору (не звужує вибірку); невідоме ім'я поля потрапляє в `unknown_fields` "
-        "відповіді, а не в помилку. Порожнє поле у списку НЕ означає, що реквізит порожній у "
-        "базі — щоб побачити реальні значення реквізитів одного запису, виклич get_object з "
-        "його Ref. Для підрахунку («скільки») НЕ рахуй рядки: використовуй filter_catalog з "
-        "agg=[\"count\"] і exclude_groups=true.",
+        _SEARCH_CATALOG_DESC,
         _params(
-            {"type": {"type": "string", "description": "Тип довідника, напр. Контрагенты, Номенклатура"},
-             "q": {"type": "string", "description": "Search by name/code; digits also match the code without leading zeros (module ≥ 1.0.41.6)"},
+            {"type": {"type": "string", "description": "Catalog name, e.g. Контрагенты"},
+             "q": {"type": "string",
+                   "description": "Name/code; digits also match a code without leading zeros"},
              "fields": {"type": "array", "items": {"type": "string"},
-                        "description": "Додаткові реквізити у рядках, напр. [\"Покупатель\",\"КодПоЕДРПОУ\"]"},
-             "only": {"type": "boolean", "description": "With fields: return only those columns; unknown name gives 422 (module ≥ 1.0.41.6)"},
+                        "description": "Extra attributes per row"},
+             "only": _ONLY,
              "limit": {"type": "integer", "default": 50},
              "cursor": {"type": "string"}},
             ["type"],
         ),
         _search_catalog,
-        description_en=(
-            "Searches items of a BAS catalog (counterparties, items, users, etc.). Each row "
-            "carries ONLY the standard fields (Ref, Code, Description, IsFolder, Parent, "
-            "DeletionMark) — WITHOUT the values of other attributes. `fields` only ADDS the "
-            "named attributes to that set (it never narrows the selection); an unknown field "
-            "name lands in the response's `unknown_fields`, not in an error. An empty field in "
-            "a list row does NOT mean the attribute is empty in the base — to see the real "
-            "attribute values of one record, call get_object with its Ref. For counting ('how "
-            "many') do NOT count rows: use filter_catalog with agg=[\"count\"] and "
-            "exclude_groups=true."
-        )),
+        description_en=_SEARCH_CATALOG_DESC),
     "get_documents": ToolSpec(
         "get_documents",
-        "Повертає документи BAS заданого типу за період. "
-        "`from` ОБОВ'ЯЗКОВИЙ — без нього сервіс відповідає 422. Якщо користувач не назвав "
-        "період, бери ЗАВІДОМО ШИРОКИЙ (from=\"2000-01-01\"), а не останній рік: вузьке вікно "
-        "мовчки відрізає документи, і «скільки всього» виходить неправильним. "
-        "ВАЖЛИВО: за замовчуванням рядки містять лише стандартні поля (Number/Date/Posted/...) — "
-        "БЕЗ контрагента й сум і БЕЗ значень інших реквізитів. Щоб відібрати документи "
-        "КОНКРЕТНОГО контрагента (чи за іншим посилальним полем), спершу знайди його ref через "
-        "search_catalog/filter_catalog, потім передай `filters`, напр. {\"Контрагент\": "
-        "\"<uuid>\"} (значення — UUID з Ref.Data; для складеного типу — \"ІмяТипу:UUID\"). Імена "
-        "полів бери з describe_metadata, не вгадуй. Presentation («… № 15 від …») — текст, НЕ ключ "
-        "фільтра: Number буває з префіксом/нулями. Знайдений документ відкривай get_object "
-        "(type=Metadata, id=Data); маючи лише номер — `q` (цифри збігаються без провідних "
-        "нулів: \"15\" знайде 00ЕР-000015), звір Date. `fields` лише ДОДАЄ вказані реквізити шапки "
-        "до стандартного набору (напр. [\"Контрагент\", \"СуммаДокумента\"]) — не звужує "
-        "вибірку; невідоме ім'я поля потрапляє в `unknown_fields` відповіді, а не в помилку. "
-        "Для повних даних і "
-        "табличних частин (номенклатура) — get_object за Ref.Data рядка. БЕЗ `orderby` порядок "
-        "рядків ДОВІЛЬНИЙ (за внутрішнім ідентифікатором), а НЕ хронологічний — визначати "
-        "«останній»/«перший» документ без `orderby` НЕ МОЖНА. Щоб отримати останній документ: "
-        "orderby=\"Дата\", desc=true, limit=1 — \"Дата\" — типовим ім'ям у російськомовних "
-        "конфігураціях, АЛЕ не гарантією (інакше — інше ім'я). Якщо здогад хибний, сервіс відповідає "
-        "422 BAD_PARAMETER з РЕАЛЬНИМ ім'ям поля в тексті помилки (напр. \"did you mean "
-        "'Дата'?\") — візьми ім'я звідти й повтори виклик, НЕ йди спершу за повним деревом "
-        "метаданих. Якщо не підказала — describe_metadata з "
-        "q=\"дата\". При заданому `orderby` курсорна пагінація "
-        "(`cursor`) не діє. Якщо питання — «скільки»/«на яку суму»/«середнє»/«максимум»/"
-        "«мінімум» — використовуй `agg` ЗАМІСТЬ вивантаження рядків і ручного підрахунку: "
-        "напр. agg=[\"count\"] або agg=[\"sum:СуммаДокумента\"]. Відповідь тоді має форму "
-        "{\"aggregates\":[...]} замість {\"data\":[...]}, і `cursor` з `agg` разом не працюють.",
+        _GET_DOCUMENTS_DESC,
         _params(
-            {"type": {"type": "string", "description": "Тип документа, напр. ЗаказПокупателя"},
-             "from": {"type": "string", "description": "Початок періоду YYYY-MM-DD"},
-             "to": {"type": "string",
-                    "description": "Кінець періоду YYYY-MM-DD; без нього — до кінця часу"},
-             "filters": {"type": "object",
-                         "description": "{ім'я_поля: значення}; для контрагента — {\"Контрагент\": \"<uuid>\"}"},
+            {"type": {"type": "string", "description": "Document type, e.g. ЗаказПокупателя"},
+             "from": {"type": "string",
+                      "description": "Period start YYYY-MM-DD. Omit when the user named no "
+                                     "period (whole history); 12 months back only for "
+                                     "latest/recent"},
+             "to": {"type": "string", "description": "Period end YYYY-MM-DD; omitted = open"},
+             "filters": {"type": "object", "description": "{field: value}; reference = UUID"},
              "fields": {"type": "array", "items": {"type": "string"},
-                        "description": "Додаткові реквізити шапки у рядках, напр. [\"Контрагент\",\"СуммаДокумента\"]"},
-             "orderby": {"type": "string", "description": "Поле сортування, напр. Дата"},
+                        "description": "Extra header attributes per row"},
+             "orderby": {"type": "string", "description": "Sort field, e.g. Дата"},
              "desc": {"type": "boolean", "default": False},
              "limit": {"type": "integer", "default": 100},
              "cursor": {"type": "string"},
-             "only": {"type": "boolean", "description": "With fields: return only those columns; unknown name gives 422 (module ≥ 1.0.41.6)"},
+             "only": _ONLY,
              "q": {"type": "string",
-                   "description": "Search by number; digits match without leading zeros (module ≥ 1.0.41.6)"},
+                   "description": "Number search; digits match without leading zeros"},
              "agg": {"type": "array", "items": {"type": "string"},
-                     "description": "Агрегатні функції замість рядків, напр. [\"count\"], "
-                                    "[\"sum:СуммаДокумента\"], [\"sum:Сумма\",\"avg:Сумма\"]. "
-                                    "Функції: count, sum, avg, min, max (крім count — поле "
-                                    "ОБОВ'ЯЗКОВЕ і числове). Несумісне з `cursor`."},
+                     "description": _AGG_DESC + ", e.g. [\"sum:СуммаДокумента\"]"},
              "groupby": {"type": "string",
-                         "description": "Поле групування для agg, напр. Контрагент — по одній "
-                                        "групі на значення поля (напр. «сума по кожному "
-                                        "контрагенту»/«топ-N за сумою» з orderby=псевдонім "
-                                        "агрегата). Без agg ігнорується."}},
-            ["type", "from"],
+                         "description": "Group field for agg (top-N: orderby=aggregate "
+                                        "alias); ignored without agg"}},
+            ["type"],
         ),
         _get_documents,
-        description_en=(
-            "Returns BAS documents of the given type over a period. Dates in YYYY-MM-DD format. "
-            "`from` is REQUIRED — without it the service answers 422. If the user did not name "
-            "a period, use a DELIBERATELY WIDE one (from=\"2000-01-01\"), not the last year: a "
-            "narrow window silently cuts off documents, and a 'how many total' answer comes out "
-            "wrong. IMPORTANT: by default rows carry only the standard fields "
-            "(Number/Date/Posted/...) — WITHOUT the counterparty, sums, or the values of other "
-            "attributes. To filter documents for a SPECIFIC counterparty (or another reference "
-            "field), first find its ref via search_catalog/filter_catalog, then pass `filters`, "
-            "e.g. {\"Контрагент\": \"<uuid>\"} (the value is the UUID from Ref.Data; for a "
-            "composite type — \"TypeName:UUID\"). Take field names from describe_metadata, "
-            "don't guess. A Presentation («… № 15 від …») is display text, NOT a filter key: "
-            "Number may be padded/prefixed. Open a found document with get_object (type=Metadata, "
-            "id=Data); with only a number use `q` (digits match without leading zeros: \"15\" "
-            "finds 00ЕР-000015), check Date. `fields` only ADDS the named header attributes to the standard set "
-            "(e.g. [\"Контрагент\", \"СуммаДокумента\"]) — it never narrows the selection; an "
-            "unknown field name lands in the response's `unknown_fields`, not in an error. An "
-            "empty field in a list row does NOT mean the attribute is empty in the base. For "
-            "full data and tabular sections (line items) — get_object using the row's Ref.Data. "
-            "WITHOUT `orderby` row order is ARBITRARY (by internal identifier), NOT "
-            "chronological — you CANNOT determine the 'latest'/'first' document without "
-            "`orderby`. To get the latest document: orderby=\"Дата\", desc=true, limit=1 — "
-            "\"Дата\" is the TYPICAL internal date field name in legacy Russian-named "
-            "configurations, BUT not a guarantee (in another configuration, e.g. an "
-            "English-named one, the field may be called something else). If the guess is wrong, "
-            "the service answers 422 BAD_PARAMETER with the REAL field name in the error text "
-            "(e.g. \"did you mean 'Дата'?\") — take the name from there and retry, do NOT go "
-            "through the full metadata tree first. If it didn't — describe_metadata with q=\"дата\". With `orderby` set, cursor pagination (`cursor`) does not apply. "
-            "If the question is 'how many'/'for what total sum'/'average'/'max'/'min' — use "
-            "`agg` INSTEAD OF pulling rows and counting by hand: e.g. agg=[\"count\"] or "
-            "agg=[\"sum:СуммаДокумента\"]. The response then takes the shape "
-            "{\"aggregates\":[...]} instead of {\"data\":[...]}, and `cursor` is incompatible "
-            "with `agg`."
-        )),
+        description_en=_GET_DOCUMENTS_DESC),
     "get_schema": ToolSpec(
         "get_schema",
         "Повертає СТРУКТУРУ документа: імена полів і їх типи, БЕЗ значень жодного конкретного "
@@ -460,84 +465,42 @@ TOOLS: dict[str, ToolSpec] = {
         )),
     "get_register_balance": ToolSpec(
         "get_register_balance",
-        "Повертає залишок по регістру накопичення (борг/взаєморозрахунки/залишки складу тощо) "
-        "з фільтрами за ВИМІРАМИ регістру. Точні імена вимірів бери з describe_metadata "
-        "(вид AccumulationRegisters) — не вгадуй (напр. вимір може зватися Контрагент, а не "
-        "counterparty). Значення-посилання (контрагент, організація, номенклатура) передавай "
-        "як UUID з Ref.Data. Приклад: {\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}. "
-        "`table` для регістру НАКОПИЧЕННЯ: balance (типово), turnovers (обороти за from/to; для "
-        "регістрів обертів лише вони), balance_and_turnovers; `from` обов'язковий, groupby "
-        "Period:month тощо. "
-        "Регістр БУХГАЛТЕРІЇ (AccountingRegisters, журнал проводок): сальдо/обороти по РАХУНКУ. "
-        "`table`: balance (сальдо на дату `on`), turnovers (обороти за from/to), "
-        "balance_and_turnovers (сальдо на початок/обороти/сальдо на кінець — ОСВ), "
-        "drcr_turnovers (обороти Дт→Кт, кореспонденція); для трьох останніх `from` обов'язковий, "
-        "`to` без значення — сьогодні. account=[\"361\"] включає субрахунки. За замовчуванням — "
-        "один рядок на рахунок; groupby=[\"ExtDimension1\"] дає розріз за субконто "
-        "(`ext_dimension_types` у відповіді каже, що таке ExtDimensionN для кожного рахунку); "
-        "для drcr_turnovers субконто в filters/groupby — ExtDimensionDr1..N / ExtDimensionCr1..N. "
-        "resources=[\"<основна сума>\"] зменшує відповідь. Самі проводки — get_register_records.",
+        _REGISTER_BALANCE_DESC,
         _params(
             {"type": {"type": "string",
-                      "description": "Ім'я регістру накопичення або бухгалтерії (з list_metadata)"},
+                      "description": "Accumulation or accounting register (from list_metadata)"},
              "filters": {"type": "object",
-                         "description": "{ім'я_виміру: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}. "
-                                        "Для регістру бухгалтерії — вимір або ExtDimension1..N "
-                                        "(ExtDimension — будь-яка позиція); для "
-                                        "drcr_turnovers — ExtDimensionDr1..N / ExtDimensionCr1..N"},
+                         "description": "{dimension: value}; reference = UUID. Accounting: "
+                                        "dimension or ExtDimension1..N (any position); "
+                                        "drcr_turnovers: ExtDimensionDr1..N/ExtDimensionCr1..N"},
              "on": {"type": "string",
-                    "description": "Дата, СТАНОМ НА яку рахувати залишок, YYYY-MM-DD. Без неї — "
-                                   "поточний залишок. Це НЕ фільтр за виміром: сюди йде лише дата "
-                                   "(напр. «борг на 01.01.2026» → on=\"2026-01-01\")"},
+                    "description": "Balance date YYYY-MM-DD (omitted = current); a date only, "
+                                   "not a dimension filter"},
              "table": {"type": "string",
                        "enum": ["balance", "turnovers", "balance_and_turnovers", "drcr_turnovers"],
-                       "description": "Virtual table: balance, turnovers, balance_and_turnovers; drcr_turnovers is accounting-only (accumulation registers: module ≥ 1.0.41.6)"},
-             "from": {"type": "string",
-                      "description": "Таблиці оборотів: початок періоду YYYY-MM-DD"},
-             "to": {"type": "string",
-                    "description": "Таблиці оборотів: кінець періоду YYYY-MM-DD"},
+                       "description": "drcr_turnovers: accounting registers only"},
+             "from": {"type": "string", "description": "Turnover tables: start YYYY-MM-DD"},
+             "to": {"type": "string", "description": "Turnover tables: end YYYY-MM-DD"},
              "account": {"type": "array", "items": {"type": "string"},
-                         "description": "Коди рахунків (напр. 361) або UUID; субрахунки включено"},
+                         "description": "Account codes (e.g. 361) or UUIDs; subaccounts included"},
              "corr_account": {"type": "array", "items": {"type": "string"},
-                              "description": "Кор. рахунки — лише table=turnovers"},
+                              "description": "table=turnovers only"},
              "account_dr": {"type": "array", "items": {"type": "string"},
-                            "description": "Рахунки Дт — лише table=drcr_turnovers"},
+                            "description": "table=drcr_turnovers only"},
              "account_cr": {"type": "array", "items": {"type": "string"},
-                            "description": "Рахунки Кт — лише table=drcr_turnovers"},
+                            "description": "table=drcr_turnovers only"},
              "groupby": {"type": "array", "items": {"type": "string"}, "maxItems": 4,
-                         "description": "До 4: ExtDimension1..N, вимір регістру, CorrAccount, "
-                                        "Period:day|week|month|quarter|year (не для balance). "
-                                        "Рахунок — завжди група"},
+                         "description": "ExtDimension1..N, a dimension, CorrAccount, "
+                                        "Period:day|week|month|quarter|year (not with balance); "
+                                        "account is always a group"},
              "resources": {"type": "array", "items": {"type": "string"},
-                           "description": "Ресурси-суми (за замовчуванням усі числові)"},
+                           "description": "Amount resources (default: all numeric)"},
              "limit": {"type": "integer", "minimum": 1, "maximum": 1000,
-                       "description": "Рядків, 1..1000 (за замовчуванням 50); truncated=true — звузь запит"}},
+                       "description": "Rows (default 50); truncated=true: narrow the query"}},
             ["type"],
         ),
         _register_balance,
-        description_en=(
-            "Returns the balance of an accumulation register (debt/mutual settlements/warehouse "
-            "stock, etc.) filtered by the register's DIMENSIONS. Take exact dimension names from "
-            "describe_metadata (kind AccumulationRegisters) — don't guess (e.g. a dimension may "
-            "be called Контрагент, not counterparty). Reference values (counterparty, "
-            "organization, item) are passed as UUIDs from Ref.Data. Example: "
-            "{\"type\":\"...\",\"filters\":{\"Контрагент\":\"<uuid>\"}}. "
-            "`table` for an ACCUMULATION register: balance (default), turnovers (over from/to; "
-            "turnover-type registers allow only these), balance_and_turnovers; `from` required, "
-            "groupby Period:month etc. "
-            "ACCOUNTING register (AccountingRegisters, the posting journal): balances/turnovers "
-            "per ACCOUNT. `table`: balance (balance at `on`), turnovers (turnovers over "
-            "from/to), balance_and_turnovers (opening/turnovers/closing — the trial balance), "
-            "drcr_turnovers (Dr→Cr correspondence turnovers); the last three need `from`, a "
-            "missing `to` means today. account=[\"361\"] includes subaccounts. By default one "
-            "line per account; groupby=[\"ExtDimension1\"] breaks it down by extdimension "
-            "(`ext_dimension_types` in the answer names what ExtDimensionN is for each account); "
-            "for drcr_turnovers the extdimension keys in filters/groupby are "
-            "ExtDimensionDr1..N / ExtDimensionCr1..N. "
-            "resources=[\"<main amount>\"] keeps the answer small. Postings themselves — "
-            "get_register_records. If the base answers that MCBP_AI is outdated, the "
-            "configuration must be updated."
-        )),
+        description_en=_REGISTER_BALANCE_DESC),
     "list_metadata": ToolSpec(
         "list_metadata",
         "Структура конфігурації BAS. metadata='all' → перелік об'єктів усіх видів одразу; "
@@ -561,131 +524,43 @@ TOOLS: dict[str, ToolSpec] = {
         )),
     "describe_metadata": ToolSpec(
         "describe_metadata",
-        "Детальний опис одного об'єкта метаданих у вигляді дерева: реквізити з типами "
-        "(для регістрів — виміри/ресурси/реквізити; для перелічень — значення; для регістру "
-        "бухгалтерії ще chart_of_accounts, correspondence і query_fields — саме ці імена "
-        "(AccountDr, ExtDimensionCr1, <Вимір>Dr) йдуть у filters/groupby). Це "
-        "СТРУКТУРА, БЕЗ жодних значень конкретного запису — наявність поля тут не означає, "
-        "що воно заповнене чи порожнє в базі. Використовуй, щоб дізнатися ТОЧНІ імена полів "
-        "(напр. чи є прапорець Pokupatel/Postavshchik) ПЕРЕД фільтрацією чи читанням даних. Не "
-        "вигадуй імена полів — спершу подивись опис. "
-        "ТАБЛИЧНІ ЧАСТИНИ за замовчуванням повертаються ЛИШЕ переліком (ім'я, синонім, "
-        "кількість реквізитів) — БЕЗ вкладених реквізитів; це НЕ означає, що в них немає "
-        "реквізитів. Щоб отримати повний перелік реквізитів КОНКРЕТНОЇ табличної частини, "
-        "виклич ще раз із `tabular_section=\"<ім'я з переліку>\"`. "
-        "Без `q` відповідь містить ВСІ реквізити шапки (для документа їх може бути 100+, це "
-        "великий обсяг) — якщо потрібне лише одне-два поля (напр. статус, дата, контрагент), "
-        "передай `q` з підрядком: він шукає і за внутрішнім іменем, і за українським синонімом "
-        "(можна писати «статус», навіть не знаючи, що поле зветься СостояниеЗаказа). Якщо `q` "
-        "нічого не знайшов — повертається не порожнеча і не повне дерево, а компактний список "
-        "усіх наявних імен (`available_names`), щоб уточнити запит.",
+        _DESCRIBE_METADATA_DESC,
         _params(
             {"metadata": {"type": "string",
-                          "description": "Вид: Catalogs, Documents, InformationRegisters, ..."},
-             "type": {"type": "string",
-                      "description": "Ім'я об'єкта, напр. Контрагенты, ЗаказПокупателя, MCBP_StatusFunctions"},
+                          "description": "Kind: Catalogs, Documents, InformationRegisters, ..."},
+             "type": {"type": "string", "description": "Object name, e.g. Контрагенты"},
              "tabular_section": {"type": "string",
-                                  "description": "Ім'я однієї табличної частини (з попереднього "
-                                                 "виклику без цього параметра) — повертає ЛИШЕ "
-                                                 "її повний перелік реквізитів"},
+                                 "description": "One tabular section: returns only its "
+                                                "attributes"},
              "q": {"type": "string",
-                   "description": "Підрядок для звуження реквізитів ШАПКИ (не табличних частин) "
-                                  "— шукає за внутрішнім іменем І за українським синонімом, без "
-                                  "урахування регістру. Без цього параметра повертається ВЕСЬ "
-                                  "(часто великий) перелік реквізитів."}},
+                   "description": "Case-insensitive substring of a header attribute's name or "
+                                  "synonym"}},
             ["metadata", "type"],
         ),
         _describe_metadata,
-        description_en=(
-            "Detailed description of a single metadata object as a tree: attributes with types "
-            "(for registers — dimensions/resources/attributes; for enums — values; for an "
-            "accounting register also chart_of_accounts, correspondence and query_fields — "
-            "those names (AccountDr, ExtDimensionCr1, <Dimension>Dr) go into filters/groupby). "
-            "This is "
-            "STRUCTURE, WITHOUT any specific record's values — a field being present here does "
-            "not mean it is filled or empty in the base. Use it to learn the EXACT field names "
-            "(e.g. whether there is a flag Pokupatel/Postavshchik) BEFORE filtering or reading "
-            "data. Don't guess field names — look at the description first. "
-            "TABULAR SECTIONS are returned by default as a LIST ONLY (name, synonym, attribute "
-            "count) — WITHOUT the nested attributes; this does NOT mean they have no "
-            "attributes. To get the full attribute list of a SPECIFIC tabular section, call "
-            "again with `tabular_section=\"<name from the list>\"`. "
-            "Without `q` the response contains ALL header attributes (a document can have 100+, "
-            "a large payload) — if only one or two fields are needed (e.g. status, date, "
-            "counterparty), pass `q` with a substring: it searches both the internal name and "
-            "the Ukrainian synonym (you can write 'статус' without knowing the field is called "
-            "СостояниеЗаказа). If `q` finds nothing — the response is neither empty nor the full "
-            "tree, but a compact list of all available names (`available_names`) to refine the "
-            "query."
-        )),
+        description_en=_DESCRIBE_METADATA_DESC),
     "filter_catalog": ToolSpec(
         "filter_catalog",
-        "Серверна вибірка елементів довідника з УНІВЕРСАЛЬНИМ фільтром за будь-якими полями "
-        "та сортуванням (фільтрація і типізація — на боці BAS, надійно). Кожен рядок містить "
-        "ЛИШЕ стандартні поля + те, що явно додано через `fields` — БЕЗ значень інших "
-        "реквізитів; порожнє поле у списку НЕ означає, що реквізит порожній у базі. "
-        "`filters` — словник {ім'я_поля: значення}, поля бери з `describe_metadata` (реальні "
-        "імена, напр. Покупатель, Постачальник, Наименование). Рівність; для рядка зі знаком "
-        "% — пошук LIKE. `orderby` — поле сортування (напр. Наименование), `desc` — за спаданням. "
-        "`exclude_groups=true` виключає групи-папки. `fields` лише ДОДАЄ реквізити до "
-        "стандартного набору (не звужує вибірку); невідоме ім'я поля йде в `unknown_fields` "
-        "відповіді, а не в помилку. Щоб побачити реальні значення реквізитів одного запису — "
-        "get_object за його Ref. Працює для будь-якої конфігурації. Використовуй це (а не "
-        "search_catalog), коли треба відфільтрувати/відсортувати за полем. Якщо питання — "
-        "«скільки»/«на яку суму»/«середнє»/«максимум»/«мінімум» — використовуй `agg` ЗАМІСТЬ "
-        "вивантаження рядків і ручного підрахунку: напр. agg=[\"count\"] або "
-        "agg=[\"sum:Сумма\"]. Відповідь тоді має форму {\"aggregates\":[...]} замість "
-        "{\"data\":[...]}. Для «скільки елементів довідника» став agg=[\"count\"] разом з "
-        "exclude_groups=true (групи — папки, не елементи); якщо довідник ієрархічний, групи "
-        "назви окремо: другий виклик agg=[\"count\"] без exclude_groups, різниця — кількість "
-        "груп (напр. «9 контрагентів, ще 3 групи»).",
+        _FILTER_CATALOG_DESC,
         _params(
-            {"type": {"type": "string", "description": "Тип довідника, напр. Контрагенты"},
+            {"type": {"type": "string", "description": "Catalog name, e.g. Контрагенты"},
              "filters": {"type": "object",
-                         "description": "{ім'я_поля: значення}, напр. {\"Покупатель\": true}"},
-             "orderby": {"type": "string", "description": "Поле сортування, напр. Наименование"},
+                         "description": "{field: value}, e.g. {\"Покупатель\": true}"},
+             "orderby": {"type": "string", "description": "Sort field"},
              "desc": {"type": "boolean", "default": False},
              "exclude_groups": {"type": "boolean", "default": False},
              "fields": {"type": "array", "items": {"type": "string"},
-                        "description": "Додаткові реквізити у рядках, напр. [\"Покупатель\",\"КодПоЕДРПОУ\"]"},
-             "only": {"type": "boolean", "description": "With fields: return only those columns; unknown name gives 422 (module ≥ 1.0.41.6)"},
+                        "description": "Extra attributes per row"},
+             "only": _ONLY,
              "limit": {"type": "integer", "default": 100},
-             "agg": {"type": "array", "items": {"type": "string"},
-                     "description": "Агрегатні функції замість рядків, напр. [\"count\"], "
-                                    "[\"sum:Поле\"], [\"sum:Поле\",\"avg:Поле\"]. Функції: count, "
-                                    "sum, avg, min, max (крім count — поле ОБОВ'ЯЗКОВЕ і числове). "
-                                    "Не рахуй суму/кількість руками по списку рядків — "
-                                    "використовуй agg. Несумісне з `cursor`."},
+             "agg": {"type": "array", "items": {"type": "string"}, "description": _AGG_DESC},
              "groupby": {"type": "string",
-                         "description": "Поле групування для agg — по одній групі на значення "
-                                        "поля (напр. «скільки контрагентів у кожній групі», "
-                                        "«топ-N за сумою» з orderby=псевдонім агрегата). Без agg "
-                                        "ігнорується."}},
+                         "description": "Group field for agg (top-N: orderby=aggregate "
+                                        "alias); ignored without agg"}},
             ["type"],
         ),
         _filter_catalog,
-        description_en=(
-            "Server-side selection of catalog items with a UNIVERSAL filter over any fields and "
-            "sorting (filtering and typing happen on the BAS side — reliable). Each row carries "
-            "ONLY the standard fields plus whatever `fields` explicitly added — WITHOUT the "
-            "values of other attributes; an empty field in a list row does NOT mean the "
-            "attribute is empty in the base. `filters` — a dict {field_name: value}, take field "
-            "names from `describe_metadata` (real names, e.g. Покупатель, Постачальник, "
-            "Наименование). Equality; for a string with a % sign — LIKE search. `orderby` — the "
-            "sort field (e.g. Наименование), `desc` — descending. `exclude_groups=true` excludes "
-            "folder groups. `fields` only ADDS attributes to the standard set (never narrows the "
-            "selection); an unknown field name goes into the response's `unknown_fields`, not "
-            "into an error. To see the real attribute values of one record — get_object using "
-            "its Ref. Works for any configuration. Use this (rather than search_catalog) when "
-            "you need to filter/sort by a field. If the question is 'how many'/'for what total "
-            "sum'/'average'/'max'/'min' — use `agg` INSTEAD OF pulling rows and counting by "
-            "hand: e.g. agg=[\"count\"] or agg=[\"sum:Сумма\"]. The response then takes the "
-            "shape {\"aggregates\":[...]} instead of {\"data\":[...]}. For 'how many items of a "
-            "catalog' use agg=[\"count\"] together with exclude_groups=true (groups are "
-            "folders, not items); if the catalog is hierarchical, report groups separately: a "
-            "second call agg=[\"count\"] without exclude_groups, the difference is the number "
-            "of groups (e.g. '9 counterparties, plus 3 groups')."
-        )),
+        description_en=_FILTER_CATALOG_DESC),
     "get_object": ToolSpec(
         "get_object",
         "ЄДИНИЙ спосіб отримати РЕАЛЬНІ ЗНАЧЕННЯ реквізитів одного конкретного об'єкта (усі "
@@ -865,98 +740,34 @@ TOOLS: dict[str, ToolSpec] = {
         )),
     "get_register_records": ToolSpec(
         "get_register_records",
-        "ЄДИНИЙ спосіб прочитати РЯДКИ регістру відомостей (InformationRegisters) — на відміну "
-        "від get_register_balance (даного регістру НАКОПИЧЕННЯ і завжди ОБЧИСЛЕНОГО залишку), "
-        "регістр відомостей не має Ref, тож search_catalog/filter_catalog/get_documents/"
-        "get_object і курсорна пагінація до нього НЕ дістають — тільки цей інструмент. Працює "
-        "і для регістру накопичення — тоді повертає СИРІ рухи (кожен запис руху), а НЕ "
-        "обчислений залишок (для залишку — get_register_balance). "
-        "`from`/`to` (YYYY-MM-DD) — ОБИДВА необов'язкові: відсутній `from` — відкрита нижня "
-        "межа, відсутній `to` — відкрита верхня; якщо регістр НЕперіодичний, а `from`/`to` "
-        "все ж передані — 422 BAD_PARAMETER. `filters` — {ім'я_поля: значення} за будь-яким "
-        "виміром/ресурсом/реквізитом (і стандартними: приймається як внутрішня назва "
-        "конфігурації, так і англійський аліас — Period/Recorder/Active/LineNumber/RecordType; "
-        "українських назв НЕ існує, синоніми лише для показу); значення-"
-        "посилання — UUID з Ref.Data; рядок зі знаком % — LIKE. `orderby`/`desc` — сортування; "
-        "невідоме поле у filters чи orderby — 422 BAD_PARAMETER з переліком реальних полів. "
-        "БЕЗ `orderby` періодичний регістр сервер сортує сам за Period СПАДНО (найновіші "
-        "першими) — щоб отримати ОСТАННІЙ запис, досить limit=1 (або явно orderby=\"Period\", "
-        "desc=true, limit=1). Курсорної пагінації НЕМАЄ (немає Ref, немає стабільного ключа) "
-        "— `truncated: true` у відповіді означає «звузь фільтр», а НЕ «візьми наступну "
-        "сторінку». Спершу list_metadata/describe_metadata, щоб дізнатись точні імена полів. "
-        "Для підсумків/порівнянь/план-факту — ЗАВЖДИ `agg` (+`groupby`), ніколи не тягни сирі "
-        "рядки, щоб скласти їх самому. Приклад: agg=[\"sum:*\"], groupby=[\"<вимір статті>\","
-        "\"<вимір сценарію>\"] → один рядок на статтю×сценарій. `Period:month|quarter|year` "
-        "групує за періодом. Відповідь тоді — {\"aggregates\":[...]} замість {\"data\":[...]}; "
-        "неактивні рухи не враховуються; у регістрі залишків групи розділені за RecordType "
-        "(прихід/витрата окремо, `record_type_split: true`). "
-        "Регістр БУХГАЛТЕРІЇ: рядки — проводки (AccountDr/AccountCr, ExtDimensionDr1.., суми); "
-        "`from` (або filters.Recorder) ОБОВ'ЯЗКОВИЙ; filters.AccountDr=\"361\" бере й субрахунки; "
-        "filters.Account / filters.ExtDimension — будь-яка сторона / будь-яка позиція. Підсумки "
-        "по рахунку — get_register_balance table=turnovers, а НЕ agg по проводках (agg групує "
-        "за точним рахунком, без згортання в рахунок-батько).",
+        _REGISTER_RECORDS_DESC,
         _params(
             {"type": {"type": "string",
-                      "description": "Ім'я регістру відомостей, накопичення або бухгалтерії (з list_metadata)"},
+                      "description": "Information, accumulation or accounting register "
+                                     "(from list_metadata)"},
              "from": {"type": "string",
-                      "description": "Початок періоду YYYY-MM-DD (необов'язково; для регістру "
-                                     "бухгалтерії — обов'язково, або filters.Recorder)"},
-             "to": {"type": "string", "description": "Кінець періоду YYYY-MM-DD (необов'язково)"},
-             "filters": {"type": "object",
-                         "description": "{ім'я_поля: значення}; посилання — UUID, напр. {\"Контрагент\": \"<uuid>\"}"},
-             "orderby": {"type": "string", "description": "Поле сортування, напр. Period"},
+                      "description": "Start YYYY-MM-DD; accounting registers: required unless "
+                                     "filters.Recorder"},
+             "to": {"type": "string", "description": "End YYYY-MM-DD"},
+             "filters": {"type": "object", "description": "{field: value}; reference = UUID"},
+             "orderby": {"type": "string",
+                         "description": "Sort field, e.g. Period; with agg an aggregate alias "
+                                        "(sum_<F>, count) or a group field"},
              "desc": {"type": "boolean", "default": False},
              "limit": {"type": "integer", "default": 100,
-                       "description": "Рядків (з agg — груп), 1..1000"},
+                       "description": "Rows (groups with agg), 1..1000"},
              "agg": {"type": "array", "items": {"type": "string"},
-                     "description": "Агрегати замість рядків: count, sum:<Поле>, avg/min/max:<Поле> "
-                                    "(поле числове); sum:* — сума всіх числових ресурсів. Напр. "
-                                    "[\"sum:*\",\"count\"]. З agg `orderby` — псевдонім агрегата "
-                                    "(sum_<Поле>, count) або поле групування"},
+                     "description": _AGG_DESC + "; sum:* = all numeric resources"},
              "groupby": {"type": "array", "items": {"type": "string"},
-                         "description": "До 4 полів групування для agg: вимір/реквізит "
-                                        "(напр. Статья) або Period:day|week|month|quarter|year. "
-                                        "Без agg — 422"},
+                         "description": "Up to 4: dimension/attribute or "
+                                        "Period:day|week|month|quarter|year; needs agg"},
              "fields": {"type": "array", "items": {"type": "string"},
-                        "description": "Return only these columns plus key ones; unknown name gives 422 (module ≥ 1.0.41.6)"}},
+                        "description": "Only these columns plus key ones; unknown name gives "
+                                       "422"}},
             ["type"],
         ),
         _register_records,
-        description_en=(
-            "The ONLY way to read the ROWS of an information register (InformationRegisters) — "
-            "unlike get_register_balance (which is for the ACCUMULATION register and always the "
-            "COMPUTED balance), an information register has no Ref, so "
-            "search_catalog/filter_catalog/get_documents/get_object and cursor pagination "
-            "cannot reach it — only this tool can. Also works for accumulation registers — then "
-            "it returns RAW movements (each movement record), NOT the computed balance (for the "
-            "balance — get_register_balance). "
-            "`from`/`to` (YYYY-MM-DD) are BOTH optional: no `from` means an open lower bound, no "
-            "`to` means an open upper bound; if the register is NOT periodic and `from`/`to` are "
-            "passed anyway — 422 BAD_PARAMETER. `filters` — {field_name: value} over any "
-            "dimension/resource/attribute (including standard ones: accepts either the internal "
-            "configuration name or the English alias — Period/Recorder/Active/LineNumber/"
-            "RecordType; there are NO Ukrainian names for these, synonyms are display-only); a "
-            "reference value is a UUID from Ref.Data; a string with a % sign is LIKE. "
-            "`orderby`/`desc` — sorting; an unknown field in filters or orderby — 422 "
-            "BAD_PARAMETER with a list of the real field names. WITHOUT `orderby` a periodic "
-            "register is sorted by the server itself by Period DESCENDING (newest first) — to "
-            "get the LATEST record, limit=1 is enough (or explicitly orderby=\"Period\", "
-            "desc=true, limit=1). There is NO cursor pagination (no Ref, no stable key) — "
-            "`truncated: true` in the response means 'narrow the filter', NOT 'fetch the next "
-            "page'. Call list_metadata/describe_metadata first to learn the exact field names. "
-            "For totals/compare/plan-vs-fact — ALWAYS `agg` (+`groupby`), never pull raw rows and "
-            "add them up. Example: agg=[\"sum:*\"], groupby=[\"<item dimension>\",\"<scenario "
-            "dimension>\"] → one row per item×scenario. `Period:month|quarter|year` buckets by "
-            "period. The response is then {\"aggregates\":[...]} instead of {\"data\":[...]}; "
-            "inactive movements are excluded; on a balance register the groups are split by "
-            "RecordType (receipt/expense separately, `record_type_split: true`). Raw rows only to "
-            "inspect individual movements. "
-            "ACCOUNTING register: rows are postings (AccountDr/AccountCr, ExtDimensionDr1.., "
-            "amounts); `from` (or filters.Recorder) is REQUIRED; filters.AccountDr=\"361\" takes "
-            "subaccounts too; filters.Account / filters.ExtDimension match either side / any "
-            "position. Totals per account — get_register_balance table=turnovers, NOT agg over "
-            "postings (agg groups by the exact account, no roll-up to the parent account)."
-        )),
+        description_en=_REGISTER_RECORDS_DESC),
     "get_related_documents": ToolSpec(
         "get_related_documents",
         "Де використовується об'єкт: документи (і записи регістрів), що посилаються на нього. "

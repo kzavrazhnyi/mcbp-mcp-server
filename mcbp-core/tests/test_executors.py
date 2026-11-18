@@ -5,8 +5,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
 import pytest
+import respx
 
+from mcbp_core.client import ConnectionConfig, MCBPClient
 from mcbp_core.tools import TOOLS
 
 
@@ -108,6 +111,35 @@ async def test_get_documents_defaults_limit_and_desc_bool(client):
     assert kw["limit"] == 100
     assert kw["desc"] is False
     assert kw["type_"] == "ЗаказПокупателя"
+
+
+@pytest.mark.parametrize("args", [{}, {"from": ""}, {"from": None}])
+async def test_get_documents_without_from_sends_the_earliest_bound(client, args):
+    # The BSL answers 422 to a document list without `from`; no period = the whole history.
+    await TOOLS["get_documents"].executor(client, {"type": "X", **args})
+    _, kw = client.calls[0]
+    assert kw["frm"] == "2000-01-01"
+
+
+async def test_get_documents_passes_an_explicit_from_unchanged(client):
+    await TOOLS["get_documents"].executor(client, {"type": "X", "from": "2026-01-01",
+                                                   "to": "2026-03-31"})
+    _, kw = client.calls[0]
+    assert kw["frm"] == "2026-01-01" and kw["to"] == "2026-03-31"
+
+
+@respx.mock
+async def test_get_documents_without_from_reaches_the_wire_as_from_2000():
+    route = respx.get(url__startswith="http://test/ai/v1/documents/X").mock(
+        return_value=httpx.Response(200, json={"data": [], "cursor": None}))
+    live = MCBPClient(ConnectionConfig(base_url="http://test", user="u", password="p",
+                                       mock=False))
+    await live.startup()
+    try:
+        await TOOLS["get_documents"].executor(live, {"type": "X"})
+        assert route.calls.last.request.url.params["from"] == "2000-01-01"
+    finally:
+        await live.shutdown()
 
 
 async def test_get_documents_desc_coerced_to_bool(client):
