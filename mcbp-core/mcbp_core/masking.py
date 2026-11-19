@@ -502,6 +502,10 @@ ADDITIONAL_MARKER = "additional"
 CONTACT_MARKER = "contact"
 _ADDITIONAL_KEY = "additional"
 _ADDITIONAL_ITEM_KEYS = frozenset({"name", "value"})
+# Pseudonym prefix of a property value: the property's own name sits next to the value
+# ({"name": "ID організації", "value": ...}), so "<name>·CODE" reads as the label repeated and
+# the model drops it as a duplicate (MCBP_Bugs #15). Rules still match on the name.
+_PROPERTY_VALUE_PREFIX = "Значення"
 _MARKER_RE: dict[str, re.Pattern[str]] = {
     marker: re.compile(rf"\.{marker}:", re.IGNORECASE)
     for marker in (ADDITIONAL_MARKER, CONTACT_MARKER)
@@ -1226,7 +1230,7 @@ class Masker:
         if forced or _matches_marked_rule(
             context, normalized, self._policy.force_mask_type_fields, ADDITIONAL_MARKER
         ):
-            return self._force_mask(name, value)
+            return self._force_mask(_PROPERTY_VALUE_PREFIX, value)
         if _matches_marked_rule(
             context, normalized, self._policy.allow_plain_type_fields, ADDITIONAL_MARKER
         ):
@@ -1234,10 +1238,12 @@ class Masker:
         if _looks_like_long_number(value):
             # A code under a name no rule knows ("Податковий номер": 87654321): numbers and
             # open types would leave it plain. Only an explicit open rule (above) opens it.
-            return self._force_mask(name, value)
+            return self._force_mask(_PROPERTY_VALUE_PREFIX, value)
         if isinstance(value, (dict, list)):
             return self._walk_value(name, value, context)
-        return self._mask_scalar(name, value, context, open_names=False)
+        return self._mask_scalar(
+            name, value, context, open_names=False, prefix=_PROPERTY_VALUE_PREFIX
+        )
 
     def _force_mask(self, key: str, value: Any) -> Any:
         """Masks a value whatever its type's openness: numbers and a reference's
@@ -1352,8 +1358,10 @@ class Masker:
             return None
 
     def _mask_scalar(
-        self, key: str | None, value: Any, context: str | None, *, open_names: bool = True
+        self, key: str | None, value: Any, context: str | None, *, open_names: bool = True,
+        prefix: str | None = None,
     ) -> Any:
+        """`key` picks the rules; `prefix` (default: `key`) names the pseudonym."""
         if value is None or isinstance(value, bool):
             return value
 
@@ -1363,7 +1371,7 @@ class Masker:
 
         types = self._field_types(key) if key else None
         if types and any(t in _BINARY_TYPES for t in types):
-            return self._pseudonym_for_field(key, value)
+            return self._pseudonym_for_field(prefix or key, value)
 
         normalized = _normalize_field_name(key) if key else ""
         forced = bool(key) and (
@@ -1371,12 +1379,12 @@ class Masker:
             or _has_forced_word(key, self._policy.forced_mask_substrings)
         )
         if forced:
-            return self._pseudonym_for_field(key, value)
+            return self._pseudonym_for_field(prefix or key, value)
 
         # Per-type rules come AFTER the global forced check: a per-type allow can never
         # open a forced-substring field (ІПН, phone, address, comment, ...).
         if _matches_type_field(context, normalized, self._policy.force_mask_type_fields):
-            return self._pseudonym_for_field(key, value)
+            return self._pseudonym_for_field(prefix or key, value)
 
         if _matches_type_field(context, normalized, self._policy.allow_plain_type_fields):
             return value
@@ -1411,7 +1419,7 @@ class Masker:
         if row_open and not _looks_like_code(value):
             return value
 
-        return self._pseudonym_for_field(key, value)
+        return self._pseudonym_for_field(prefix or key, value)
 
     def _mask_reference(self, ref: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
         metadata_name = ref.get("Metadata")

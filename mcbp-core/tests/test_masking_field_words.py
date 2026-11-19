@@ -179,4 +179,4 @@ def test_additional_property_name_is_matched_by_plain_substring() -> None:
                "data": {"additional": [{"name": n, "value": "текст"} for n in names]}}
     out = masker.mask(payload)["data"]["additional"]
     for name, item in zip(names, out):
-        assert item["value"].startswith(f"{name}·"), name
+        assert item["value"].startswith("Значення·"), name

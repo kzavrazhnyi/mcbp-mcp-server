@@ -222,7 +222,7 @@ def test_additional_long_number_under_a_plain_name_is_masked():
                       ("Робочий", "(050) 111-22-33"), ("Домашній", "050.111.22.33"))
     for name in ("Податковий номер", "Код платника", "Мобільний", "Сума", "Робочий",
                  "Домашній"):
-        assert isinstance(out[name], str) and out[name].startswith(f"{name}·"), name
+        assert isinstance(out[name], str) and out[name].startswith("Значення·"), name
 
 
 def test_additional_short_numbers_dates_and_amounts_stay():

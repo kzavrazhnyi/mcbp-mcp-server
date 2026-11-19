@@ -44,7 +44,7 @@ def test_additional_masked_by_name_rule_case_insensitive():
     masker = _masker(force_mask_type_fields=[f"{CATALOG}.additional:номер картки"])
     out = _values(masker.mask(_object([{"name": "Номер Картки", "value": "AB-77"},
                                        {"name": "Хобі", "value": "риболовля"}])))
-    assert out["Номер Картки"] != "AB-77" and out["Номер Картки"].startswith("Номер Картки·")
+    assert out["Номер Картки"] != "AB-77" and out["Номер Картки"].startswith("Значення·")
     assert out["Хобі"] == "риболовля"  # unmatched, open type: untouched
 
 
@@ -59,7 +59,7 @@ def test_additional_numeric_value_masked_by_rule():
     masker = _masker(force_mask_type_fields=[f"{CATALOG}.additional:Ліміт"])
     out = _values(masker.mask(_object([{"name": "Ліміт", "value": 150000},
                                        {"name": "Рейтинг", "value": 5}])))
-    assert isinstance(out["Ліміт"], str) and out["Ліміт"].startswith("Ліміт·")
+    assert isinstance(out["Ліміт"], str) and out["Ліміт"].startswith("Значення·")
     assert out["Рейтинг"] == 5
     assert masker.unmask_arguments({"x": out["Ліміт"]}) == {"x": "150000"}
 
@@ -234,3 +234,22 @@ def test_related_rows_of_a_closed_document_type_are_masked():
     assert row["type"] == "ЗаказПокупателя" and row["found_in"] == "Контрагент"
     assert row["date"] == "2026-05-04T00:00:00"
     assert result["failed_sources"] == ["Document.X"] and result["sources"] == "all"
+
+
+def test_additional_pseudonym_does_not_repeat_its_name_and_round_trips():
+    """MCBP_Bugs #15: `{"name": "ID організації", "value": "ID організації·CODE"}` read as the
+    label repeated; the value pseudonym takes a neutral prefix and still restores."""
+    real = {"ID організації": "5f1c9b2e-org-0001", "ЄДРПОУ / ДРФО": "12345678",
+            "Номер картки": "AB-77", "Податковий номер": 87654321}
+    masker = Masker(secret="t", policy=MaskingPolicy.default().merge(
+        {"open_type_exact": [CATALOG], "forced_mask_substrings": ["id"],
+         "force_mask_type_fields": [f"{CATALOG}.additional:Номер картки"]}),
+        type_classifier=_classifier)
+    out = _values(masker.mask(_object([{"name": n, "value": v} for n, v in real.items()])))
+    for name, value in real.items():
+        masked = out[name]
+        assert isinstance(masked, str) and masked != str(value), name
+        assert not masked.startswith(name), masked
+        assert masked.startswith("Значення·"), masked
+        assert masker.unmask_arguments({"x": masked}) == {"x": str(value)}, name
+        assert masker.rehydrate_text(f"{name}: {masked}") == f"{name}: {value}", name
