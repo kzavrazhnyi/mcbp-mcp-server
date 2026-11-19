@@ -253,3 +253,29 @@ def test_additional_pseudonym_does_not_repeat_its_name_and_round_trips():
         assert masked.startswith("Значення·"), masked
         assert masker.unmask_arguments({"x": masked}) == {"x": str(value)}, name
         assert masker.rehydrate_text(f"{name}: {masked}") == f"{name}: {value}", name
+
+
+def test_nested_additional_values_do_not_repeat_the_attribute_name_and_round_trip():
+    """A list of scalars, a list mixing a dict, and a dict: no masked string starts with the
+    attribute's name; each restores through unmask and rehydrate."""
+    masker = Masker(secret="t", policy=MaskingPolicy.default(), type_classifier=_classifier)
+    items = [{"name": "Коди", "value": ["XK-1", "YK-2"]},
+             {"name": "Змішане", "value": ["MX-3", {"Інфо": "abc-4"}]},
+             {"name": "Склад", "value": {"Інфо": "abc-5"}}]
+    out = _values(masker.mask(_object(items)))
+
+    def strings(value: object) -> list[str]:
+        if isinstance(value, dict):
+            return [s for v in value.values() for s in strings(v)]
+        if isinstance(value, list):
+            return [s for v in value for s in strings(v)]
+        return [value] if isinstance(value, str) else []
+
+    originals = {"Коди": ["XK-1", "YK-2"], "Змішане": ["MX-3", "abc-4"], "Склад": ["abc-5"]}
+    for name, real in originals.items():
+        masked = strings(out[name])
+        assert len(masked) == len(real) and not set(masked) & set(real), name
+        assert not any(s.startswith(name) for s in masked), masked
+        assert masker.unmask_arguments({"x": masked}) == {"x": real}, name
+        assert masker.rehydrate_text(" ".join(masked)) == " ".join(real), name
+    assert out["Коди"][0].startswith("Значення·")

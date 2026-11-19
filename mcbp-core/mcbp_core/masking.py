@@ -504,7 +504,7 @@ _ADDITIONAL_KEY = "additional"
 _ADDITIONAL_ITEM_KEYS = frozenset({"name", "value"})
 # Pseudonym prefix of a property value: the property's own name sits next to the value
 # ({"name": "ID організації", "value": ...}), so "<name>·CODE" reads as the label repeated and
-# the model drops it as a duplicate (MCBP_Bugs #15). Rules still match on the name.
+# the model drops it as a duplicate. Rules still match on the name.
 _PROPERTY_VALUE_PREFIX = "Значення"
 _MARKER_RE: dict[str, re.Pattern[str]] = {
     marker: re.compile(rf"\.{marker}:", re.IGNORECASE)
@@ -1239,6 +1239,9 @@ class Masker:
             # A code under a name no rule knows ("Податковий номер": 87654321): numbers and
             # open types would leave it plain. Only an explicit open rule (above) opens it.
             return self._force_mask(_PROPERTY_VALUE_PREFIX, value)
+        if isinstance(value, list) and not (value and all(isinstance(v, dict) for v in value)):
+            # Items of a scalar list would inherit `name` as their pseudonym prefix.
+            return [self._mask_property_value(name, v, context) for v in value]
         if isinstance(value, (dict, list)):
             return self._walk_value(name, value, context)
         return self._mask_scalar(
