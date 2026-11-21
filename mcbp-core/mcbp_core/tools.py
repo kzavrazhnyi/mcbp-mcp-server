@@ -261,7 +261,26 @@ def _type_list(value: Any) -> list[str] | None:
     return [t.strip() for t in items]
 
 
+# Arguments of each mode of list_additional_attributes; a call mixing modes is refused rather
+# than silently answering one of them.
+_ATTRIBUTE_LIST_MODES = {
+    "id": ("id",),
+    "object_id": ("object_id", "metadata", "type"),
+    "list": ("owner", "set", "q", "include_deleted", "limit", "cursor"),
+}
+
+
 async def _list_additional_attributes(c: MCBPClient, a: dict) -> Any:
+    given = {mode for mode, names in _ATTRIBUTE_LIST_MODES.items()
+             if any(a.get(n) not in (None, "", False) for n in names)}
+    if (a.get("metadata") or a.get("type")) and not a.get("object_id"):
+        raise ParameterError("metadata/type only go with object_id (the owner object's values); "
+                             "for the attributes of a type pass owner, e.g. "
+                             "owner=\"Catalog.Контрагенты\"")
+    if len(given) > 1:
+        raise ParameterError("pick one mode: id (one attribute's card), object_id with "
+                             "metadata+type (one object's values), or owner/set/q (a list); "
+                             "got arguments of " + ", ".join(sorted(given)))
     if a.get("id"):
         return await c.get_property(a["id"])
     if a.get("object_id"):

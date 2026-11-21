@@ -437,9 +437,11 @@ class MCBPClient:
         is_dash = path.startswith("ai/v1/dashboard/layout")
         is_chat = path.startswith("ai/v1/chats") or is_tips or is_dash
         # client/auth and client/profile bodies carry the client's phone/e-mail, chat id and
-        # personal data: log shapes only.
+        # personal data; /properties bodies carry additional-attribute values (a «Пароль»
+        # property included) and titles: log shapes only.
         brief = _kw_brief(kw, chat=is_chat or path.startswith(("ai/v1/client/auth",
-                                                               "ai/v1/client/profile")))
+                                                               "ai/v1/client/profile",
+                                                               "ai/v1/properties")))
         if self._mock:
             log.info("[mock] %s %s %s", method, path, brief)
             if is_dash:

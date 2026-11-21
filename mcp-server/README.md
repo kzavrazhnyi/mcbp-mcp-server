@@ -40,7 +40,7 @@ server is the thin MCP adapter in front of it.
 
 ## Tools
 
-15 read tools are always registered. 13 write tools appear only when `MCP_ALLOW_WRITE` is on.
+18 read tools are always registered. 15 write tools appear only when `MCP_ALLOW_WRITE` is on.
 
 | Tool | What it does |
 |---|---|
@@ -53,6 +53,8 @@ server is the thin MCP adapter in front of it.
 | `get_object` | **All** attribute values of one record + its tabular sections |
 | `get_register_balance` | Accumulation-register balance (native query) |
 | `get_register_records` | Raw rows of an information or accumulation register |
+| `get_related_documents` | Where an object is used: documents and register records that reference it |
+| `full_text_search` | Free-text search across the whole infobase (platform full-text index) when the type is unknown |
 | `get_event_log` | Event log slice (errors/warnings by default) under the user's own rights |
 | `get_client_orders` | Sales orders of a confirmed client (by phone or e-mail login), read-only, under the user's own rights |
 | `get_client_bonus` | Bonus points (balance, accrued) of a confirmed client, read-only; null = no bonus data in the base |
@@ -72,6 +74,9 @@ server is the thin MCP adapter in front of it.
 | `exchange_enqueue` *(gated)* | Put one existing object into an exchange node's queue (its "Manually" registration rule) |
 | `exchange_run` *(gated)* | Run the exchange with a node now — sends the node's whole unprocessed queue |
 | `exchange_result` | What happened to one object in the exchange: queue rows (`processed`, error text, `receiver_id`) and the match |
+| `list_additional_attributes` | Additional attributes (додаткові реквізити): a list by owner type/set/text, one attribute's card, or one object's values |
+| `upsert_additional_attribute` *(gated)* | Create or update one additional attribute (title, type, set, tooltip, multiline) |
+| `set_additional_attribute_values` *(gated)* | Set or remove additional-attribute values of one object |
 
 Prompt `setup_exchange` (arguments `object_type`, optional `target_base`): for an agent connected to
 two servers (source and target base) — read-only analysis, a numbered plan confirmed by the user,

@@ -3,6 +3,7 @@ error mapping, a recording fake for the executors, the registry and masking of t
 from __future__ import annotations
 
 import json
+import logging
 from urllib.parse import unquote
 
 import httpx
@@ -158,6 +159,54 @@ async def test_patch_property_values_is_not_retried():
         await client.shutdown()
 
 
+@respx.mock
+async def test_patch_property_is_retried_after_a_503():
+    route = respx.patch(f"{BASE}/properties/{PROP_ID}").mock(side_effect=[
+        httpx.Response(503), httpx.Response(200, json={"id": PROP_ID, "changed": []})])
+    client = await _live()
+    try:
+        assert (await client.patch_property(PROP_ID, title="X"))["id"] == PROP_ID
+        assert route.call_count == 2
+    finally:
+        await client.shutdown()
+
+
+# --- client: request bodies never reach the log ----------------------------------------------
+
+SECRET = "S3cret-value-2026"
+
+
+@respx.mock
+async def test_property_bodies_are_logged_as_shapes_only(caplog):
+    respx.patch(url__startswith=f"{BASE}/properties/values/").mock(
+        return_value=httpx.Response(422, json={"error": {"code": "WRITE_FAILED",
+                                                         "message": "failed"}}))
+    respx.post(f"{BASE}/properties").mock(return_value=httpx.Response(201, json={}))
+    respx.patch(f"{BASE}/properties/{PROP_ID}").mock(return_value=httpx.Response(200, json={}))
+    client = await _live()
+    caplog.set_level(logging.DEBUG, logger="mcbp.api")
+    try:
+        with pytest.raises(WriteFailedError):
+            await client.patch_property_values(
+                "Catalogs", "Контрагенты", OWNER_ID,
+                set=[{"property": "Пароль", "value": SECRET}])
+        await client.create_property(SECRET, ["String"], SET_ID, comment=SECRET)
+        await client.patch_property(PROP_ID, title=SECRET, tooltip=SECRET)
+    finally:
+        await client.shutdown()
+    assert caplog.records, "the requests were not logged at all"
+    assert SECRET not in caplog.text
+    assert "body_keys=" in caplog.text
+
+
+async def test_mock_mode_logs_property_bodies_as_shapes_only(caplog):
+    client = MCBPClient(ConnectionConfig(user="u", mock=True))
+    caplog.set_level(logging.DEBUG, logger="mcbp.api")
+    await client.patch_property_values("Catalogs", "Контрагенты", OWNER_ID,
+                                       set=[{"property": "Пароль", "value": SECRET}])
+    assert caplog.records and SECRET not in caplog.text
+
+
 # --- client: error mapping --------------------------------------------------------------------
 
 @pytest.mark.parametrize("code", ["BAD_TYPE", "PROPERTY_NOT_IN_SET", "PROPERTY_IN_USE",
@@ -261,6 +310,30 @@ async def test_list_tool_modes(client):
 async def test_list_tool_object_id_needs_the_owner_type(client):
     with pytest.raises(ParameterError):
         await TOOLS["list_additional_attributes"].executor(client, {"object_id": OWNER_ID})
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("args", [
+    {"metadata": "Catalogs", "type": "Контрагенты"},
+    {"type": "Контрагенты"},
+    {"metadata": "Catalogs", "type": "Контрагенты", "q": "Кол"},
+])
+async def test_list_tool_owner_type_without_object_id_points_to_owner(client, args):
+    with pytest.raises(ParameterError) as exc:
+        await TOOLS["list_additional_attributes"].executor(client, args)
+    assert "owner" in exc.value.message and "object_id" in exc.value.message
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("args", [
+    {"id": PROP_ID, "metadata": "Catalogs", "type": "Контрагенты", "object_id": OWNER_ID},
+    {"id": PROP_ID, "owner": "Catalog.Контрагенты"},
+    {"metadata": "Catalogs", "type": "Контрагенты", "object_id": OWNER_ID, "set": SET_ID},
+])
+async def test_list_tool_refuses_mixed_modes(client, args):
+    with pytest.raises(ParameterError) as exc:
+        await TOOLS["list_additional_attributes"].executor(client, args)
+    assert "one mode" in exc.value.message
     assert client.calls == []
 
 
