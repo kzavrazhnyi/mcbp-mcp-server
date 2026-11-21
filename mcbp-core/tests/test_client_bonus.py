@@ -178,8 +178,9 @@ def test_tool_is_read_only_mcp_only_and_appended_last():
     assert spec.read_only is True
     assert spec.surfaces == frozenset({"mcp"})
     # The exchange tools were appended after it.
-    assert list(TOOLS)[-4:] == ["get_client_bonus", "exchange_enqueue", "exchange_run",
-                               "exchange_result"]
+    names = list(TOOLS)
+    assert names[names.index("get_client_bonus"):names.index("exchange_result") + 1] == [
+        "get_client_bonus", "exchange_enqueue", "exchange_run", "exchange_result"]
     assert spec.parameters["required"] == ["login"]
     assert set(spec.parameters["properties"]) == {"login", "counterparty"}
     assert "points" in spec.description_en and "no bonus data in this base" in spec.description_en

@@ -54,19 +54,20 @@ async def test_inventory_matches_registry_order_with_write():
     assert names == [s.name for s in tool_specs(surface="mcp", include_write=True)]
 
 
-async def test_gating_fifteen_without_flag_twentyeight_with():
+async def test_gating_read_only_without_flag_all_with():
     async with Client(_mock_server(allow_write=False)) as client:
         without = await client.list_tools()
     async with Client(_mock_server(allow_write=True)) as client:
         with_flag = await client.list_tools()
-    assert len(without.tools) == 15
-    assert len(with_flag.tools) == 28
+    assert len(without.tools) == len(tool_specs(surface="mcp")) == 18
+    assert len(with_flag.tools) == len(tool_specs(surface="mcp", include_write=True)) == 33
     assert "exchange_result" in {t.name for t in without.tools}
     added = {t.name for t in with_flag.tools} - {t.name for t in without.tools}
     assert added == {"write_object", "save_context", "patch_object", "set_function_status",
                      "upsert_function", "upsert_idea", "upsert_function_task",
                      "set_register_record", "upsert_project", "upsert_bug", "set_bug_status",
-                     "exchange_enqueue", "exchange_run"}
+                     "exchange_enqueue", "exchange_run", "upsert_additional_attribute",
+                     "set_additional_attribute_values"}
 
 
 async def test_exchange_round_trip_in_mock_mode():

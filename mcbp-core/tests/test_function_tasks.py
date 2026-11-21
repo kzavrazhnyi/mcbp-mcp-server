@@ -193,7 +193,10 @@ def test_specs_are_mcp_only_appended_after_event_log_and_upsert_is_write_gated()
                                                        "get_client_bonus",
                                                        "exchange_enqueue",
                                                        "exchange_run",
-                                                       "exchange_result"]
+                                                       "exchange_result",
+                                                       "list_additional_attributes",
+                                                       "upsert_additional_attribute",
+                                                       "set_additional_attribute_values"]
     listing, upsert = TOOLS["list_function_tasks"], TOOLS["upsert_function_task"]
     assert listing.read_only is True and upsert.read_only is False
     assert listing.surfaces == upsert.surfaces == frozenset({"mcp"})

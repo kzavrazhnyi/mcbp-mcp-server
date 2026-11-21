@@ -531,6 +531,40 @@ _LINE_NUMBER_KEYS = frozenset({"LineNumber", "НомерСтроки", "Номе
 _PROPERTY_TYPE_PREFIX = "ПланВидовХарактеристик."
 
 
+# `/properties` (additional attributes as objects, mcbp-core 0.1.41). A property VALUE of one
+# owner - {"property": uuid, "title", "value"} or a change {"property", "title", "old", "new"} -
+# is masked by the property's title, as `_mask_additional` masks by `name`. A property
+# DEFINITION (a list row, a card, the `available` legend, a create answer) is configuration -
+# its title, name, types and sets stay readable, like `name` in the `additional` block; only
+# its free text (comment, tooltip) goes through the usual masking.
+_PROPERTY_VALUE_KEYS = ("value", "old", "new")
+_PROPERTY_DEFINITION_OPEN_KEYS = frozenset({
+    "id", "property", "title", "name", "types", "type", "set", "sets", "kind",
+    "deletion_mark", "ext_values", "required", "multiline", "created", "warnings",
+})
+_PROPERTY_OPEN_CHANGE_FIELDS = frozenset({
+    "title", "type", "set", "deletion_mark", "required", "multiline",
+})
+
+
+def _looks_like_property_value(value: dict[str, Any]) -> bool:
+    return ("property" in value and isinstance(value.get("title"), str)
+            and ("value" in value or {"old", "new"} <= value.keys()))
+
+
+def _looks_like_property_definition(value: dict[str, Any]) -> bool:
+    return (isinstance(value.get("title"), str) and ("id" in value or "property" in value)
+            and (isinstance(value.get("types"), list) or isinstance(value.get("type"), list))
+            and "value" not in value and "data" not in value)
+
+
+def _looks_like_property_patch(value: dict[str, Any]) -> bool:
+    """PATCH /properties/{id}: exactly {"id", "changed": [{field, old, new}, ...]}."""
+    changed = value.get("changed")
+    return value.keys() == {"id", "changed"} and isinstance(changed, list) and all(
+        isinstance(item, dict) and _CHANGE_ENTRY_KEYS <= item.keys() for item in changed)
+
+
 def _looks_like_additional(value: Any) -> bool:
     return isinstance(value, list) and bool(value) and all(
         isinstance(item, dict) and _ADDITIONAL_ITEM_KEYS <= item.keys()
@@ -979,6 +1013,15 @@ class Masker:
                 return self._mask_reference(value)
             if _looks_like_value_reference(value):
                 return self._mask_value_reference(value)
+            if _looks_like_property_value(value):
+                return self._mask_property_item(value, context)
+            if _looks_like_property_definition(value):
+                return {k: v if k in _PROPERTY_DEFINITION_OPEN_KEYS
+                        else self._walk_value(k, v, context) for k, v in value.items()}
+            if _looks_like_property_patch(value):
+                return {"id": value["id"], "changed": [
+                    item if item.get("field") in _PROPERTY_OPEN_CHANGE_FIELDS
+                    else self._mask_change_entry(item, context) for item in value["changed"]]}
             if _looks_like_change_entry(value):
                 return self._mask_change_entry(value, context)
             if _looks_like_aggregate_envelope(value):
@@ -1231,6 +1274,20 @@ class Masker:
             masked["name"] = item["name"]
             masked["value"] = self._mask_property_value(item["name"], item["value"], context)
             out.append({k: masked[k] for k in item})
+        return out
+
+    def _mask_property_item(self, item: dict[str, Any], context: str | None) -> dict[str, Any]:
+        """{"property", "title", "value"} / {..., "old", "new"}: the title and the property id
+        stay readable, the value(s) are masked by the title (`_mask_property_value`)."""
+        title = item["title"]
+        out: dict[str, Any] = {}
+        for k, v in item.items():
+            if k in ("property", "title"):
+                out[k] = v
+            elif k in _PROPERTY_VALUE_KEYS:
+                out[k] = self._mask_property_value(title, v, context)
+            else:
+                out[k] = self._walk_value(k, v, context)
         return out
 
     def _mask_property_value(self, name: str, value: Any, context: str | None) -> Any:

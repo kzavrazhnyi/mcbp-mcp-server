@@ -14,11 +14,12 @@ This module does NOT import `app.*` or `mcp.*` — it is consumed by both the ba
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from mcbp_core.client import MCBPClient
-from mcbp_core.errors import ParameterError
+from mcbp_core.errors import NotFoundError, ParameterError
 
 Executor = Callable[[MCBPClient, dict[str, Any]], Awaitable[Any]]
 
@@ -68,12 +69,28 @@ def _extra(a: dict, *names: str) -> dict:
     return {n: a[n] for n in names if a.get(n) is not None}
 
 
+# A chart of characteristic types (e.g. the BSP ДополнительныеРеквизитыИСведения) passed where a
+# catalog is expected: an older MCBP_AI answers NOT_FOUND. The hint lives in the error text only
+# — the tool descriptions stay as they are (prompt cache).
+_CHART_HINT = (" Якщо це план видів характеристик (напр. ДополнительныеРеквизитыИСведения) - "
+               "metadata=ChartsOfCharacteristicTypes; додаткові реквізити - "
+               "list_additional_attributes.")
+_CATALOG_KINDS = ("catalog", "справочник", "довідник")
+
+
+def _with_chart_hint(exc: NotFoundError) -> NotFoundError:
+    return NotFoundError(exc.message + _CHART_HINT, code=exc.code, http_status=exc.http_status)
+
+
 # --- Executors (kwargs only — the client's parameter order is NOT a contract) ---
 async def _search_catalog(c: MCBPClient, a: dict) -> Any:
-    return await c.list_catalog(
-        type_=a["type"], cursor=a.get("cursor"), limit=a.get("limit", 50),
-        q=a.get("q"), fields=a.get("fields"), **_extra(a, "only"),
-    )
+    try:
+        return await c.list_catalog(
+            type_=a["type"], cursor=a.get("cursor"), limit=a.get("limit", 50),
+            q=a.get("q"), fields=a.get("fields"), **_extra(a, "only"),
+        )
+    except NotFoundError as exc:
+        raise _with_chart_hint(exc) from exc
 
 
 # The BSL answers 422 to a document list without `from`; the tool lets the model omit it (no
@@ -157,12 +174,15 @@ async def _get_event_log(c: MCBPClient, a: dict) -> Any:
 
 
 async def _filter_catalog(c: MCBPClient, a: dict) -> Any:
-    return await c.filter_catalog(
-        type_=a["type"], filters=a.get("filters") or {}, orderby=a.get("orderby"),
-        desc=bool(a.get("desc", False)), exclude_groups=bool(a.get("exclude_groups", False)),
-        limit=a.get("limit", 100), cursor=a.get("cursor"), fields=a.get("fields"),
-        agg=a.get("agg"), groupby=a.get("groupby"), **_extra(a, "only"),
-    )
+    try:
+        return await c.filter_catalog(
+            type_=a["type"], filters=a.get("filters") or {}, orderby=a.get("orderby"),
+            desc=bool(a.get("desc", False)), exclude_groups=bool(a.get("exclude_groups", False)),
+            limit=a.get("limit", 100), cursor=a.get("cursor"), fields=a.get("fields"),
+            agg=a.get("agg"), groupby=a.get("groupby"), **_extra(a, "only"),
+        )
+    except NotFoundError as exc:
+        raise _with_chart_hint(exc) from exc
 
 
 async def _list_metadata(c: MCBPClient, a: dict) -> Any:
@@ -182,11 +202,16 @@ _OBJECT_ROWS_DEFAULT = 200
 
 
 async def _get_object(c: MCBPClient, a: dict) -> Any:
-    return await c.get_object(
-        kind=a["metadata"], type_=a["type"], object_id=a["id"], fields=a.get("fields"),
-        sections=a.get("tabular_sections"), rows=a.get("rows_limit", _OBJECT_ROWS_DEFAULT),
-        offset=a.get("offset"), **_extra(a, "additional", "only"),
-    )
+    try:
+        return await c.get_object(
+            kind=a["metadata"], type_=a["type"], object_id=a["id"], fields=a.get("fields"),
+            sections=a.get("tabular_sections"), rows=a.get("rows_limit", _OBJECT_ROWS_DEFAULT),
+            offset=a.get("offset"), **_extra(a, "additional", "only"),
+        )
+    except NotFoundError as exc:
+        if str(a.get("metadata", "")).strip().lower().startswith(_CATALOG_KINDS):
+            raise _with_chart_hint(exc) from exc
+        raise
 
 
 async def _health(c: MCBPClient, a: dict) -> Any:
@@ -214,6 +239,85 @@ async def _patch_object(c: MCBPClient, a: dict) -> Any:
 
 async def _set_register_record(c: MCBPClient, a: dict) -> Any:
     return await c.set_register_record(type_=a["type"], fields=a["fields"])
+
+
+def _uuid(name: str, value: Any) -> str:
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except ValueError:
+        raise ParameterError(f"{name} is not a UUID: {value!r}") from None
+
+
+def _type_list(value: Any) -> list[str] | None:
+    """`type` as a list of type names: a lone string is one type."""
+    if value is None:
+        return None
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list) or not all(isinstance(t, str) and t.strip() for t in items):
+        raise ParameterError("type must be a type name or a list of them, e.g. \"String\", "
+                             "[\"CatalogRef.Номенклатура\"]")
+    if not items:
+        raise ParameterError("type must not be empty")
+    return [t.strip() for t in items]
+
+
+async def _list_additional_attributes(c: MCBPClient, a: dict) -> Any:
+    if a.get("id"):
+        return await c.get_property(a["id"])
+    if a.get("object_id"):
+        if not a.get("metadata") or not a.get("type"):
+            raise ParameterError("object_id needs metadata and type of the owner object, "
+                                 "e.g. metadata=\"Catalogs\", type=\"Контрагенты\"")
+        return await c.get_property_values(a["metadata"], a["type"], a["object_id"])
+    return await c.list_properties(
+        set=a.get("set"), owner=a.get("owner"), q=a.get("q"),
+        include_deleted=bool(a.get("include_deleted", False)),
+        limit=a.get("limit", 100), cursor=a.get("cursor"),
+    )
+
+
+_ATTRIBUTE_OPTIONAL = ("comment", "tooltip", "required", "multiline")
+
+
+async def _upsert_additional_attribute(c: MCBPClient, a: dict) -> Any:
+    title = a.get("title")
+    if title is not None and (not isinstance(title, str) or not title.strip()):
+        raise ParameterError("title must not be blank")
+    types = _type_list(a.get("type"))
+    if not a.get("id"):
+        missing = [n for n, v in (("title", title), ("type", types), ("set", a.get("set")))
+                   if not v]
+        if missing:
+            raise ParameterError("creating an additional attribute needs "
+                                 + ", ".join(missing) + " (pass `id` to change an existing one)")
+        if a.get("deletion_mark") is not None:
+            raise ParameterError("deletion_mark applies to an existing attribute - pass `id`")
+        return await c.create_property(title.strip(), types, _uuid("set", a["set"]),
+                                       **_extra(a, *_ATTRIBUTE_OPTIONAL))
+    fields = _extra(a, "title", "set", "deletion_mark", *_ATTRIBUTE_OPTIONAL)
+    if "set" in fields:
+        fields["set"] = _uuid("set", fields["set"])
+    if types is not None:
+        fields["type"] = types
+    if not fields:
+        raise ParameterError("nothing to change - pass at least one field besides `id`")
+    return await c.patch_property(_uuid("id", a["id"]), **fields)
+
+
+async def _set_additional_attribute_values(c: MCBPClient, a: dict) -> Any:
+    values = a.get("set") or {}
+    remove = a.get("remove") or []
+    if not isinstance(values, dict):
+        raise ParameterError("set must be an object {property: value}")
+    if not isinstance(remove, list) or not all(isinstance(r, str) and r.strip() for r in remove):
+        raise ParameterError("remove must be a list of property UUIDs or titles")
+    if not values and not remove:
+        raise ParameterError("pass `set` and/or `remove` - both are empty")
+    return await c.patch_property_values(
+        a["metadata"], a["type"], _uuid("id", a["id"]),
+        set=[{"property": k, "value": v} for k, v in values.items()] or None,
+        remove=remove or None,
+    )
 
 
 async def _set_function_status(c: MCBPClient, a: dict) -> Any:
@@ -1338,6 +1442,116 @@ TOOLS: dict[str, ToolSpec] = {
             "to the user verbatim. `exchange` is the MCBP_DataExchange row {key, information, "
             "exchangedata} when the object is matched, else null. NOT_FOUND -> nothing was "
             "queued or exchanged for that object and node. " + _EXCHANGE_COMMON_EN
+        )),
+    "list_additional_attributes": ToolSpec(
+        "list_additional_attributes",
+        "Додаткові реквізити БСП (ПВХ ДополнительныеРеквизитыИСведения і набори "
+        "НаборыДополнительныхРеквизитовИСведений) — лише читання. Три режими: (1) список — "
+        "`owner` (повне ім'я типу власника, напр. \"Catalog.Контрагенты\" або "
+        "\"Справочник.Контрагенты\": реквізити його наборів), `set` (UUID набору), `q` "
+        "(підрядок заголовка), `include_deleted`; рядок {id, title, name, types, set}; (2) `id` — "
+        "картка одного реквізиту (types, sets, ext_values); (3) `metadata`+`type`+`object_id` — "
+        "значення реквізитів одного об'єкта (`data`) і `available` — ті, що можна заповнити "
+        "через set_additional_attribute_values. Додаткові ВІДОМОСТІ не підтримуються.",
+        _params(
+            {"owner": {"type": "string",
+                       "description": "Тип власника, напр. Catalog.Контрагенты"},
+             "set": {"type": "string", "description": "UUID набору"},
+             "q": {"type": "string", "description": "Підрядок заголовка"},
+             "include_deleted": {"type": "boolean",
+                                 "description": "Показати позначені на вилучення"},
+             "id": {"type": "string", "description": "UUID реквізиту — його картка"},
+             "metadata": {"type": "string", "description": "Вид власника: Catalogs, Documents"},
+             "type": {"type": "string", "description": "Тип власника, напр. Контрагенты"},
+             "object_id": {"type": "string",
+                           "description": "UUID об'єкта-власника (Ref.Data) — його значення"},
+             "limit": {"type": "integer", "description": "1..1000, типово 100"},
+             "cursor": {"type": "string", "description": "Курсор наступної сторінки"}},
+            [],
+        ),
+        _list_additional_attributes,
+        description_en=(
+            "BSP additional attributes (chart ДополнительныеРеквизитыИСведения and the sets "
+            "НаборыДополнительныхРеквизитовИСведений) — read-only. Three modes: (1) a list — "
+            "`owner` (full name of the owner type, e.g. \"Catalog.Контрагенты\" or "
+            "\"Справочник.Контрагенты\": the attributes of its sets), `set` (set UUID), `q` "
+            "(title substring), `include_deleted`; a row is {id, title, name, types, set}; (2) "
+            "`id` — the card of one attribute (types, sets, ext_values); (3) `metadata`+`type`+"
+            "`object_id` — the attribute values of one object (`data`) and `available` — the ones "
+            "set_additional_attribute_values can fill. Additional INFO is not supported."
+        )),
+    "upsert_additional_attribute": ToolSpec(
+        "upsert_additional_attribute",
+        "Створює (без `id`) або змінює (з `id`) додатковий реквізит БСП. Створення: `title`, "
+        "`type` і `set` (UUID набору з list_additional_attributes) обов'язкові; Ім'я база "
+        "генерує як БСП. `type` — масив імен типів: \"String\", \"String:100\", "
+        "\"Number:15.2\", \"Date\", \"Boolean\", \"CatalogRef.Номенклатура\", "
+        "\"ExtValues\" (власний список значень реквізиту); недозволений тип — 422 BAD_TYPE з "
+        "переліком. Зміна: лише передані поля; тип реквізиту, що вже має значення, не "
+        "змінюється (422 PROPERTY_IN_USE); `set` переносить у інший набір. Вилучення — лише "
+        "`deletion_mark: true` (фізично не видаляється). Дубль заголовка в наборі — "
+        "попередження `warnings`, не помилка. Підтверди результат користувачу за відповіддю.",
+        _params(
+            {"id": {"type": "string",
+                    "description": "UUID реквізиту — змінити; без нього — створити"},
+             "title": {"type": "string", "description": "Заголовок, напр. Колір"},
+             "type": {"type": "array", "items": {"type": "string"},
+                      "description": "Типи значення, напр. [\"String\"] або "
+                                     "[\"CatalogRef.Номенклатура\"]"},
+             "set": {"type": "string", "description": "UUID набору"},
+             "comment": {"type": "string", "description": "Коментар"},
+             "tooltip": {"type": "string", "description": "Підказка"},
+             "required": {"type": "boolean", "description": "Обов'язковий для заповнення"},
+             "multiline": {"type": "boolean", "description": "Багаторядкове поле"},
+             "deletion_mark": {"type": "boolean",
+                               "description": "Позначка вилучення (лише з `id`)"}},
+            [],
+        ),
+        _upsert_additional_attribute,
+        read_only=False,
+        description_en=(
+            "Creates (no `id`) or changes (with `id`) a BSP additional attribute. Create: "
+            "`title`, `type` and `set` (set UUID from list_additional_attributes) are required; "
+            "the base generates the Name the BSP way. `type` is an array of type names: "
+            "\"String\", \"String:100\", \"Number:15.2\", \"Date\", \"Boolean\", "
+            "\"CatalogRef.Номенклатура\", \"ExtValues\" (the attribute's own value list); a "
+            "type the chart does not allow is 422 BAD_TYPE with the list. Change: only the passed "
+            "fields; the type of an attribute that already holds values cannot change (422 "
+            "PROPERTY_IN_USE); `set` moves it to another set. Deletion is `deletion_mark: true` "
+            "only (never physical). A duplicate title in the set is a `warnings` entry, not an "
+            "error. Confirm the result to the user from the response."
+        )),
+    "set_additional_attribute_values": ToolSpec(
+        "set_additional_attribute_values",
+        "Записує значення додаткових реквізитів одного об'єкта. `set` {реквізит: значення} — "
+        "реквізит це UUID, заголовок або ім'я з `available` (list_additional_attributes з "
+        "object_id); значення як у patch_object: посилання — UUID, дата — YYYY-MM-DD, для "
+        "ExtValues — UUID або назва значення; null/\"\" прибирає. `remove` [реквізит, ...] — "
+        "прибрати значення. Реквізит не з наборів власника — 422 PROPERTY_NOT_IN_SET з "
+        "переліком; кілька збігів за заголовком — 422 AMBIGUOUS (передай UUID). Не повторюй "
+        "після незрозумілого результату — перевір list_additional_attributes. Відповідь: "
+        "`changed` зі старим і новим значенням.",
+        _params(
+            {"metadata": {"type": "string", "description": "Вид: Catalogs, Documents, ..."},
+             "type": {"type": "string", "description": "Тип об'єкта, напр. Контрагенты"},
+             "id": {"type": "string", "description": "UUID об'єкта (Ref.Data)"},
+             "set": {"type": "object",
+                     "description": "{реквізит: значення}, напр. {\"Колір\": \"Червоний\"}"},
+             "remove": {"type": "array", "items": {"type": "string"},
+                        "description": "Реквізити, значення яких прибрати"}},
+            ["metadata", "type", "id"],
+        ),
+        _set_additional_attribute_values,
+        read_only=False,
+        description_en=(
+            "Writes the additional-attribute values of one object. `set` {attribute: value} — "
+            "the attribute is a UUID, title or name from `available` (list_additional_attributes "
+            "with object_id); values as in patch_object: a reference is a UUID, a date "
+            "YYYY-MM-DD, for ExtValues a UUID or the value's name; null/\"\" removes. `remove` "
+            "[attribute, ...] — clear those values. An attribute outside the owner's sets is 422 "
+            "PROPERTY_NOT_IN_SET with the list; several title matches are 422 AMBIGUOUS (pass the "
+            "UUID). Do not repeat after an unclear result — check with "
+            "list_additional_attributes. The response lists `changed` with old and new values."
         )),
 }
 

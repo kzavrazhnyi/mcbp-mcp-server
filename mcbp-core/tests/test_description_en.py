@@ -53,9 +53,12 @@ def test_count_rule_in_descriptions():
 
 
 def test_tool_counts_unchanged():
-    assert len(TOOLS) == 30
-    assert len(tool_specs(surface="mcp")) == 17
-    assert len(tool_specs(surface="mcp", include_write=True)) == 30
+    # 0.1.41: +3 additional-attribute tools (1 read, 2 write) on both surfaces.
+    assert len(TOOLS) == 33
+    assert len(tool_specs(surface="mcp")) == 18
+    assert len(tool_specs(surface="mcp", include_write=True)) == 33
+    assert len(tool_specs(surface="backend")) == 12
+    assert len(tool_specs(surface="backend", include_write=True)) == 17
 
 
 def test_aggregation_rule_in_register_records_descriptions():

@@ -84,6 +84,14 @@ _ERROR_CODE_MAP: dict[str, type[MCBPError]] = {
 
 _KEPT_CODES = frozenset({"FTS_DISABLED", "FTS_ERROR"})
 
+# `/properties` (additional attributes) answers 422 with these codes: the caller can fix the
+# request (another type, another set, a UUID instead of an ambiguous title), so they surface as
+# ParameterError — with the code kept, so the model reads WHY. PROPERTY_IN_USE: the type of an
+# attribute that already holds values cannot change.
+_PARAMETER_CODES = frozenset({
+    "BAD_TYPE", "PROPERTY_NOT_IN_SET", "PROPERTY_IN_USE", "AMBIGUOUS", "NOT_SUPPORTED",
+})
+
 log = logging.getLogger("mcbp.api")
 
 # `sensitive_rules`: shortest forced substring accepted, and the most items taken from a base.
@@ -95,6 +103,14 @@ _SENSITIVE_RULES_MAX = 200
 # creates (`id="new"`) or appends rows is not idempotent either: `patch_object` passes retry=False.
 _RETRYABLE_METHODS = frozenset({"GET", "PATCH"})
 _MAX_RETRIES = 2
+
+
+def _uuid_arg(name: str, value: Any) -> str:
+    """A UUID argument in canonical form, or ParameterError naming the argument."""
+    try:
+        return str(uuid.UUID(str(value).strip()))
+    except (ValueError, AttributeError, TypeError):
+        raise ParameterError(f"{name} is not a UUID: {value!r}") from None
 
 
 def _typed_error_from_body(text: str) -> Exception | None:
@@ -115,6 +131,8 @@ def _typed_error_from_body(text: str) -> Exception | None:
     code = error["code"]
     if code in _KEPT_CODES:  # no dedicated class, but the model/caller branches on the code
         return UpstreamError(message, code=code)
+    if code in _PARAMETER_CODES:
+        return ParameterError(message, code=code, http_status=422)
     return _ERROR_CODE_MAP.get(code, UpstreamError)(message)
 
 
@@ -1308,6 +1326,99 @@ class MCBPClient:
         return await self._request(
             "POST", f"/ai/v1/registers/{type_}/records", json=fields,
         )
+
+    # --- Additional attributes (BSP ДополнительныеРеквизиты: ПВХ ДополнительныеРеквизитыИСведения
+    # + sets in Справочник.НаборыДополнительныхРеквизитовИСведений). Additional INFO (the
+    # ДополнительныеСведения register) is not supported yet: `kind="info"` answers NOT_SUPPORTED.
+    # Deletion is the deletion mark only (`patch_property(..., deletion_mark=True)`).
+
+    async def list_properties(self, *, set: str | None = None, owner: str | None = None,
+                              q: str | None = None, kind: str | None = None,
+                              include_deleted: bool = False, limit: int | None = None,
+                              cursor: str | None = None) -> dict:
+        """Additional attributes, narrowed by `set` (set UUID), `owner` (e.g.
+        "Catalog.Контрагенты": the sets that apply to this type), `q` (title substring).
+        Deletion-marked items only with `include_deleted`. {"data": [...], "cursor"}."""
+        params: dict[str, Any] = {}
+        if set:
+            params["set"] = _uuid_arg("set", set)
+        if owner:
+            params["owner"] = owner
+        if q:
+            params["q"] = q
+        if kind:
+            params["kind"] = kind
+        if include_deleted:
+            params["include_deleted"] = "true"
+        if limit is not None:
+            params["limit"] = limit
+        if cursor:
+            params["cursor"] = cursor
+        return await self._request("GET", "/ai/v1/properties", params=params or None)
+
+    async def get_property(self, property_id: str) -> dict:
+        """The card of one additional attribute: id, name, title, type, sets, deletion mark."""
+        pid = _uuid_arg("id", property_id)
+        return await self._request("GET", f"/ai/v1/properties/{quote(pid, safe='')}")
+
+    async def create_property(self, title: str, type_: str | list[str], set: str, *,
+                              kind: str | None = None, **opt: Any) -> dict:
+        """Creates an additional attribute in the set `set` (UUID). `type_` is a type name or a
+        list of them ("String", "Number", "Date", "Boolean", "CatalogRef.Номенклатура", ...).
+        BAS generates Имя the way BSP does. `opt`: comment, required, tooltip, multiline.
+        A duplicate title is a warning (`warnings`), not an error. POST is not retried.
+        201 {"id","name","title","type","set","created": true[, "warnings"]}."""
+        if not isinstance(title, str) or not title.strip():
+            raise ParameterError("title is required and must not be blank")
+        if not type_:
+            raise ParameterError("type is required, e.g. \"String\" or \"CatalogRef.Номенклатура\"")
+        body: dict[str, Any] = {"title": title.strip(), "type": type_,
+                                "set": _uuid_arg("set", set)}
+        if kind:
+            body["kind"] = kind
+        body.update({k: v for k, v in opt.items() if v is not None})
+        return await self._request("POST", "/ai/v1/properties", json=body)
+
+    async def patch_property(self, property_id: str, **fields: Any) -> dict:
+        """Changes an additional attribute: title, type, set, deletion_mark, comment, tooltip,
+        required (only the passed ones; None = untouched). Имя is never changed. A type change
+        of an attribute that already holds values is 422 PROPERTY_IN_USE.
+        {"id","changed": [{"field","old","new"}, ...]}."""
+        pid = _uuid_arg("id", property_id)
+        body = {k: v for k, v in fields.items() if v is not None}
+        if "title" in body and (not isinstance(body["title"], str) or not body["title"].strip()):
+            raise ParameterError("title must not be blank")
+        if "set" in body:
+            body["set"] = _uuid_arg("set", body["set"])
+        if not body:
+            raise ParameterError("nothing to change - pass at least one field")
+        return await self._request("PATCH", f"/ai/v1/properties/{quote(pid, safe='')}", json=body)
+
+    async def get_property_values(self, kind: str, type_: str, object_id: str) -> dict:
+        """Additional-attribute values of one object: [{property_id, title, value}, ...]."""
+        oid = _uuid_arg("id", object_id)
+        return await self._request(
+            "GET", f"/ai/v1/properties/values/{quote(kind, safe='')}/{quote(type_, safe='')}/"
+                   f"{quote(oid, safe='')}")
+
+    async def patch_property_values(self, kind: str, type_: str, object_id: str, *,
+                                    set: list[dict] | None = None,
+                                    remove: list[str] | None = None) -> dict:
+        """Sets (`set`: [{"property", "value"}]) and removes (`remove`: [property, ...]) values of
+        additional attributes on one object. `property` is a UUID or a title/name; an ambiguous
+        one is 422 AMBIGUOUS, one outside the owner's sets 422 PROPERTY_NOT_IN_SET. Not retried.
+        {"id","changed": [{"property","title","old","new"}, ...]}."""
+        oid = _uuid_arg("id", object_id)
+        if not set and not remove:
+            raise ParameterError("pass `set` and/or `remove` - both are empty")
+        body: dict[str, Any] = {}
+        if set:
+            body["set"] = set
+        if remove:
+            body["remove"] = remove
+        return await self._request(
+            "PATCH", f"/ai/v1/properties/values/{quote(kind, safe='')}/{quote(type_, safe='')}/"
+                     f"{quote(oid, safe='')}", json=body, retry=False)
 
     async def set_function_status(self, function_id: str, *, version: str, status: str,
                                   date_execution: str | None = None,
@@ -2921,6 +3032,8 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return _mock_bug_status(path, kw)
     if method == "POST" and path.startswith("ai/v1/exchange/"):
         return _mock_exchange(path.rstrip("/").rsplit("/", 1)[-1], kw.get("json"))
+    if path.rstrip("/") == "ai/v1/properties" or path.startswith("ai/v1/properties/"):
+        return _mock_properties(method, path.rstrip("/"), kw)
     if path.startswith("ai/v1/related/"):
         kind, type_, object_id = path.rstrip("/").split("/")[-3:]
         return {"metadata": kind.lower(), "type": type_, "id": object_id,
@@ -3075,6 +3188,50 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
     if method == "POST" and "/objects/" in path:
         return {"type": path.split("/")[-1], "data": {"ref": "new-ref-001", "created": True}}
     return {"data": None}
+
+
+_MOCK_PROPERTY = {"id": "5b0e1c7a-0000-4000-8000-000000000001", "title": "Колір",
+                  "name": "Колір_5b0e1c7a000040008000000000000001", "types": ["String"],
+                  "set": {"id": "7dbf0eb7-6360-4a32-91b3-85698ca935cf", "title": "Контрагенти"},
+                  "deletion_mark": False}
+
+
+def _mock_properties(method: str, path: str, kw: dict) -> dict:
+    """Stateless mock of /ai/v1/properties: echoes the request in the success shape."""
+    params = kw.get("params") or {}
+    body = kw.get("json") or {}
+    if path == "ai/v1/properties":
+        if params.get("kind") == "info" or body.get("kind") == "info":
+            raise ParameterError("additional info (kind=info) is not supported yet",
+                                 code="NOT_SUPPORTED", http_status=422)
+        if method == "POST":
+            types = body.get("type")
+            return {"id": _MOCK_PROPERTY["id"],
+                    "name": f"{body.get('title', '')}_5b0e1c7a000040008000000000000001",
+                    "title": body.get("title"),
+                    "type": [types] if isinstance(types, str) else types,
+                    "set": body.get("set"), "created": True}
+        return {"data": [_MOCK_PROPERTY], "cursor": None}
+    if path.startswith("ai/v1/properties/values/"):
+        kind, type_, object_id = path.split("/")[-3:]
+        head = {"metadata": kind.lower(), "type": type_, "id": object_id}
+        if method == "PATCH":
+            changed = [{"property": it.get("property"), "title": str(it.get("property")),
+                        "old": None, "new": it.get("value")} for it in body.get("set") or []]
+            changed += [{"property": it, "title": str(it), "old": "<mock:old>", "new": None}
+                        for it in body.get("remove") or []]
+            return {**head, "changed": changed}
+        return {**head,
+                "data": [{"property": _MOCK_PROPERTY["id"], "title": "Колір",
+                          "value": "Червоний"}],
+                "available": [{"property": _MOCK_PROPERTY["id"], "title": "Колір",
+                               "types": ["String"]}]}
+    property_id = path.rsplit("/", 1)[-1]
+    if method == "PATCH":
+        return {"id": property_id, "changed": [
+            {"field": k, "old": _MOCK_PROPERTY.get(k), "new": v} for k, v in body.items()]}
+    return {**_MOCK_PROPERTY, "id": property_id, "sets": [_MOCK_PROPERTY["set"]],
+            "ext_values": False}
 
 
 _EXCHANGE_ACTIONS = ("enqueue", "run", "result")
