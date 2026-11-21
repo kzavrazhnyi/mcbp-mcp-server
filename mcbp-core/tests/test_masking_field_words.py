@@ -180,3 +180,40 @@ def test_additional_property_name_is_matched_by_plain_substring() -> None:
     out = masker.mask(payload)["data"]["additional"]
     for name, item in zip(names, out):
         assert item["value"].startswith("Значення·"), name
+
+
+CREDENTIAL_FIELDS = (
+    "Пароль", "ПарольПользователя", "Password", "UserPassword", "Passwd", "APIKey", "ApiKey",
+    "api_key", "API_KEY", "КлючAPI", "Token", "AccessToken", "ТокенДоступа", "Secret",
+    "ClientSecret", "СекретныйКлюч", "СекретнийКлюч",
+)
+NOT_CREDENTIAL_FIELDS = (
+    "Секретарь", "Секретар", "Secretary", "КлючевыеСлова", "Ключ", "КлючСвязи", "Description",
+)
+
+
+@pytest.mark.parametrize("name", CREDENTIAL_FIELDS)
+def test_credential_field_is_forced(name: str) -> None:
+    assert is_field_forced(DEFAULT_POLICY, name)
+
+
+@pytest.mark.parametrize("name", NOT_CREDENTIAL_FIELDS)
+def test_credential_words_do_not_force_lookalikes(name: str) -> None:
+    assert not is_field_forced(DEFAULT_POLICY, name)
+
+
+def test_credential_fields_and_additional_properties_are_masked() -> None:
+    masker = _catalog_masker(CATALOG)  # an open catalog: plain strings would stay readable
+    fields = {"Пароль": "p1", "Password": "p2", "APIKey": "k1", "Секретарь": "Іваненко",
+              "КлючевыеСлова": "опт", "Description": "Склад"}
+    props = ("Пароль від кабінету", "Ключ API", "Секретар", "Ключові слова")
+    payload = {"metadata": "catalog", "type": "Контрагенты", "data": {
+        **fields, "additional": [{"name": n, "value": "текст"} for n in props]}}
+    data = masker.mask(payload)["data"]
+    for name in ("Пароль", "Password", "APIKey"):
+        assert data[name] != fields[name], name
+    for name in ("Секретарь", "КлючевыеСлова", "Description"):
+        assert data[name] == fields[name], name
+    values = [item["value"] for item in data["additional"]]
+    assert values[0].startswith("Значення·") and values[1].startswith("Значення·")
+    assert values[2:] == ["текст", "текст"]

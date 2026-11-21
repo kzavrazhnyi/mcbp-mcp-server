@@ -113,6 +113,12 @@ _DEFAULT_FORCED_SUBSTRINGS: tuple[str, ...] = (
     "деньрождения", "деньнародження", "рождени", "народжен",
     "комментарий", "коментар", "comment",
     "примечание", "примітка", "note",
+    # Credentials. Not bare "секрет" (it is inside "Секретарь"/"Секретар"), nor bare "ключ"
+    # ("КлючевыеСлова"); names are whitespace-stripped, so «Ключ API» is "ключapi".
+    "пароль", "password", "passwd",
+    "токен", "token",
+    "secret", "секретн",
+    "apikey", "api_key", "api-key", "ключapi", "ключапи",
 )
 
 _BINARY_TYPES = frozenset({"ХранилищеЗначения", "ValueStorage", "ДвоичныеДанные", "BinaryData"})
@@ -298,10 +304,11 @@ def _contains_any(normalized: str, substrings: tuple[str, ...]) -> bool:
     return any(s and s in normalized for s in substrings)
 
 
-# Words holding "inn"/"инн" that are not a tax number ("Inner", "Длинное"); written in any
+# Words holding a key that are not its data ("inn" in "Inner", "secret" in "Secretary"); written in any
 # case but all capitals (an acronym run "INNER" may be INN + ER), they do not count for a key.
 _FORCED_KEY_EXCEPTION_WORDS: tuple[str, ...] = (
     "inner", "dinner", "innovation", "beginning", "длинн",
+    "secretar",  # "Secretary" holds "secret"
 )
 
 
