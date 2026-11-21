@@ -184,12 +184,23 @@ def test_additional_property_name_is_matched_by_plain_substring() -> None:
 
 CREDENTIAL_FIELDS = (
     "Пароль", "ПарольПользователя", "Password", "UserPassword", "Passwd", "APIKey", "ApiKey",
-    "api_key", "API_KEY", "КлючAPI", "Token", "AccessToken", "ТокенДоступа", "Secret",
-    "ClientSecret", "СекретныйКлюч", "СекретнийКлюч",
+    "api_key", "API_KEY", "КлючAPI", "Ключ_API", "APIКлюч", "API_Ключ", "КлючАПИ", "КлючАПІ",
+    "AccessKey", "КлючДоступа", "КлючДоступу", "PrivateKey", "ЗакрытыйКлюч", "ЗакритийКлюч",
+    "Token", "AccessToken", "ТокенДоступа", "Secret", "ClientSecret", "СекретныйКлюч",
+    "СекретнийКлюч",
+    # Accepted trade-offs: an all-capitals word skips the exception; "секретн" is in it.
+    "SECRETARY", "Секретность",
 )
 NOT_CREDENTIAL_FIELDS = (
     "Секретарь", "Секретар", "Secretary", "КлючевыеСлова", "Ключ", "КлючСвязи", "Description",
 )
+CREDENTIAL_PROPERTIES = (
+    "Пароль від кабінету", "Ключ API", "API ключ", "API-ключ", "Ключ_API", "КлючАПІ",
+    "Ключ АПІ", "Access key", "Ключ доступу", "Private key", "Закритий ключ", "Токен",
+    # Accepted trade-off: a property name is plain substring, with no exception words.
+    "Secretary",
+)
+NOT_CREDENTIAL_PROPERTIES = ("Ключ", "Ключ связи", "Ключевые слова", "Секретар")
 
 
 @pytest.mark.parametrize("name", CREDENTIAL_FIELDS)
@@ -202,18 +213,29 @@ def test_credential_words_do_not_force_lookalikes(name: str) -> None:
     assert not is_field_forced(DEFAULT_POLICY, name)
 
 
-def test_credential_fields_and_additional_properties_are_masked() -> None:
+def _property_values(*names: str) -> list:
     masker = _catalog_masker(CATALOG)  # an open catalog: plain strings would stay readable
+    payload = {"metadata": "catalog", "type": "Контрагенты",
+               "data": {"additional": [{"name": n, "value": "текст"} for n in names]}}
+    return [item["value"] for item in masker.mask(payload)["data"]["additional"]]
+
+
+@pytest.mark.parametrize("name", CREDENTIAL_PROPERTIES)
+def test_credential_property_is_masked(name: str) -> None:
+    assert _property_values(name)[0].startswith("Значення·")
+
+
+@pytest.mark.parametrize("name", NOT_CREDENTIAL_PROPERTIES)
+def test_credential_words_do_not_mask_lookalike_properties(name: str) -> None:
+    assert _property_values(name) == ["текст"]
+
+
+def test_credential_fields_are_masked_in_a_row() -> None:
     fields = {"Пароль": "p1", "Password": "p2", "APIKey": "k1", "Секретарь": "Іваненко",
               "КлючевыеСлова": "опт", "Description": "Склад"}
-    props = ("Пароль від кабінету", "Ключ API", "Секретар", "Ключові слова")
-    payload = {"metadata": "catalog", "type": "Контрагенты", "data": {
-        **fields, "additional": [{"name": n, "value": "текст"} for n in props]}}
-    data = masker.mask(payload)["data"]
+    payload = {"metadata": "catalog", "type": "Контрагенты", "data": dict(fields)}
+    data = _catalog_masker(CATALOG).mask(payload)["data"]
     for name in ("Пароль", "Password", "APIKey"):
         assert data[name] != fields[name], name
     for name in ("Секретарь", "КлючевыеСлова", "Description"):
         assert data[name] == fields[name], name
-    values = [item["value"] for item in data["additional"]]
-    assert values[0].startswith("Значення·") and values[1].startswith("Значення·")
-    assert values[2:] == ["текст", "текст"]

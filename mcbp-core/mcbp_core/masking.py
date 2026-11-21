@@ -118,7 +118,8 @@ _DEFAULT_FORCED_SUBSTRINGS: tuple[str, ...] = (
     "пароль", "password", "passwd",
     "токен", "token",
     "secret", "секретн",
-    "apikey", "api_key", "api-key", "ключapi", "ключапи",
+    "apikey", "api_key", "ключapi", "ключ_api", "apiключ", "api_ключ", "ключапи", "ключапі",
+    "accesskey", "privatekey", "ключдоступа", "ключдоступу", "закрытыйключ", "закритийключ",
 )
 
 _BINARY_TYPES = frozenset({"ХранилищеЗначения", "ValueStorage", "ДвоичныеДанные", "BinaryData"})
@@ -304,8 +305,16 @@ def _contains_any(normalized: str, substrings: tuple[str, ...]) -> bool:
     return any(s and s in normalized for s in substrings)
 
 
-# Words holding a key that are not its data ("inn" in "Inner", "secret" in "Secretary"); written in any
-# case but all capitals (an acronym run "INNER" may be INN + ER), they do not count for a key.
+def _property_name_forced(normalized: str, substrings: tuple[str, ...]) -> bool:
+    """An additional property's name (free text, already `_normalize_field_name`d) holds a
+    forced key - as written, or with "-" and "_" dropped too («API-ключ», «Ключ_API»)."""
+    return _contains_any(normalized, substrings) or _contains_any(
+        normalized.replace("-", "").replace("_", ""), substrings)
+
+
+# Field names only (an additional property's name is plain substring): words holding a key that
+# are not its data ("inn" in "Inner", "secret" in "Secretary"); written in any case but all
+# capitals (an acronym run "INNER" may be INN + ER), they do not count for a key.
 _FORCED_KEY_EXCEPTION_WORDS: tuple[str, ...] = (
     "inner", "dinner", "innovation", "beginning", "длинн",
     "secretar",  # "Secretary" holds "secret"
@@ -1116,8 +1125,8 @@ class Masker:
     def _property_always_masked(self, name: str, context: str | None) -> bool:
         normalized = _normalize_field_name(name)
         # A property name is free text with no CamelCase to split by: plain substring match.
-        forced = _matches_pattern(normalized, self._policy.force_mask_fields) or _contains_any(
-            normalized, self._policy.forced_mask_substrings)
+        forced = _matches_pattern(normalized, self._policy.force_mask_fields) or (
+            _property_name_forced(normalized, self._policy.forced_mask_substrings))
         return (bool(normalized) and forced) or _matches_marked_rule(
             context, normalized, self._policy.force_mask_type_fields, ADDITIONAL_MARKER)
 
@@ -1231,9 +1240,8 @@ class Masker:
         forced. An exact open field name (Number, Date, ...) does not open a value here: a
         property is not that platform attribute."""
         normalized = _normalize_field_name(name)
-        forced = _matches_pattern(normalized, self._policy.force_mask_fields) or _contains_any(
-            normalized, self._policy.forced_mask_substrings
-        )
+        forced = _matches_pattern(normalized, self._policy.force_mask_fields) or (
+            _property_name_forced(normalized, self._policy.forced_mask_substrings))
         if forced or _matches_marked_rule(
             context, normalized, self._policy.force_mask_type_fields, ADDITIONAL_MARKER
         ):
