@@ -19,9 +19,9 @@ _UA_DESCRIPTION_SHA256 = {
     "filter_catalog": "5080b83d6548bc43df1c1aa93763131236201e05c91884767e4d341091375558",
     "get_object": "6a7ac39616e2ea5e4a70732efecb444604eeea96dcf649e311bf5c53f0766876",
     "health": "2b472b33a1af9c2bbfbe89bbb2434dd9a85ad05c91208a7e24d856e8edc9f365",
-    "write_object": "af53d4d8b7f051cb853d3e311cfbdb8a62e4418b2111a533ff51cba665c78ff4",
+    "write_object": "da62de7170e149ca4fc30e51113c8363cec71f68fef461b4e1913908f6308044",
     "save_context": "3a87ceeb0b5daa3077c67d66ee5f3be38bb4241df2ec06c7c70bc00712d970ff",
-    "patch_object": "d6b341cfb0fc2ab4f65aa37e26fb063279122ab2a932cda410583a8ad6d8e46a",
+    "patch_object": "0faa4ee8afdbca15ad88c24d547891198ffd7d14c0e13fa64b1039c464b3f902",
     "get_register_records": "1bc3c869dd1d265c0cb3149a297ce1cda1fe3c01d93b1ca9a3b2115760f50b56",
 }
 
@@ -68,3 +68,16 @@ def test_aggregation_rule_in_register_records_descriptions():
     for text in (TOOLS["get_object"].description, TOOLS["get_object"].description_en):
         assert "tabular_sections" in text and "rows_limit" in text
         assert "tabular_section_counts" in text and "offset" in text
+
+
+def test_confirm_before_change_on_every_write_tool_except_save_context():
+    en = ("Changes data in the base: first tell the user exactly what will change "
+          "(object, field, old → new value) and call this only after their explicit "
+          "confirmation of that change.")
+    uk = ("Змінює дані в базі: спершу скажи користувачу, що саме зміниться (об'єкт, поле, "
+          "старе → нове значення), і викликай лише після його явного підтвердження цієї зміни.")
+    for spec in TOOLS.values():
+        expected = not spec.read_only and spec.name != "save_context"
+        assert (spec.description_en or "").endswith(en) is expected, spec.name
+        assert spec.description.endswith(uk) is expected, spec.name
+        assert (en in (spec.description_en or "")) is expected, spec.name

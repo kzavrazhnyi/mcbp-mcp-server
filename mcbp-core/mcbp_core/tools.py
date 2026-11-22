@@ -15,7 +15,7 @@ This module does NOT import `app.*` or `mcp.*` — it is consumed by both the ba
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 
 from mcbp_core.client import MCBPClient
@@ -1595,6 +1595,23 @@ TOOLS: dict[str, ToolSpec] = {
             "list_additional_attributes. The response lists `changed` with old and new values."
         )),
 }
+
+# Every data-changing tool (save_context only stores conversation notes) ends with the same
+# confirm-before-change rule, appended here so no spec can miss it.
+_CONFIRM_CHANGE_EXEMPT = frozenset({"save_context"})
+_CONFIRM_CHANGE_UK = (" Змінює дані в базі: спершу скажи користувачу, що саме зміниться (об'єкт, "
+                      "поле, старе → нове значення), і викликай лише після його явного "
+                      "підтвердження цієї зміни.")
+_CONFIRM_CHANGE_EN = (" Changes data in the base: first tell the user exactly what will change "
+                      "(object, field, old → new value) and call this only after their explicit "
+                      "confirmation of that change.")
+for _name, _spec in list(TOOLS.items()):
+    if not _spec.read_only and _name not in _CONFIRM_CHANGE_EXEMPT:
+        TOOLS[_name] = replace(
+            _spec, description=_spec.description + _CONFIRM_CHANGE_UK,
+            description_en=(_spec.description_en or "") + _CONFIRM_CHANGE_EN,
+        )
+del _name, _spec
 
 
 def tool_specs(
