@@ -708,6 +708,53 @@ async def test_health_omits_version_when_base_sends_none(body_extra: dict):
         await client.shutdown()
 
 
+async def _health_with(body_extra: dict) -> dict:
+    respx.get("http://test/ai/v1/health").mock(
+        return_value=httpx.Response(
+            200, json={"status": "ok", "service": "MCBP_AI", "key": True, **body_extra}
+        )
+    )
+    client = _live_client()
+    await client.startup()
+    try:
+        return await client.health()
+    finally:
+        await client.shutdown()
+
+
+@respx.mock
+async def test_health_passes_platform_and_configuration_when_sent():
+    conf = {"name": "MCBP", "synonym": "MCBP+", "version": "1.0.40.7"}
+    result = await _health_with({"platform": "8.3.19.1529", "configuration": conf})
+    assert result["platform"] == "8.3.19.1529"
+    assert result["configuration"] == conf
+
+
+@pytest.mark.parametrize("body_extra", [
+    {}, {"platform": None}, {"platform": ""}, {"platform": 8319}, {"platform": ["8.3"]},
+])
+@respx.mock
+async def test_health_omits_platform_when_absent_or_wrong_type(body_extra: dict):
+    assert "platform" not in await _health_with(body_extra)
+
+
+@pytest.mark.parametrize("body_extra", [
+    {}, {"configuration": None}, {"configuration": "MCBP"}, {"configuration": ["MCBP"]},
+    {"configuration": {}}, {"configuration": {"name": 1, "synonym": None, "version": [1]}},
+])
+@respx.mock
+async def test_health_omits_configuration_when_absent_or_wrong_type(body_extra: dict):
+    assert "configuration" not in await _health_with(body_extra)
+
+
+@respx.mock
+async def test_health_configuration_keeps_only_string_known_fields():
+    result = await _health_with({"configuration": {
+        "name": "MCBP", "synonym": 5, "version": None, "extra": "x",
+    }})
+    assert result["configuration"] == {"name": "MCBP"}
+
+
 @respx.mock
 async def test_health_returns_real_key_false():
     respx.get("http://test/ai/v1/health").mock(
@@ -747,6 +794,8 @@ async def test_health_mock_mode_still_usable():
     assert result["service"] == "MCBP_AI"
     assert result["key"] is True
     assert result["is_admin"] is True
+    assert isinstance(result["platform"], str)
+    assert set(result["configuration"]) == {"name", "synonym", "version"}
 
 
 async def test_connection_config_verify_defaults_true():

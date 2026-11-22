@@ -569,6 +569,16 @@ class MCBPClient:
         version = payload.get("version")
         if isinstance(version, str) and version:
             result["version"] = version
+        # Sent only to a caller with a valid key (and absent on older bases): same rule as version.
+        platform = payload.get("platform")
+        if isinstance(platform, str) and platform:
+            result["platform"] = platform
+        configuration = payload.get("configuration")
+        if isinstance(configuration, dict):
+            conf = {k: configuration[k] for k in ("name", "synonym", "version")
+                    if isinstance(configuration.get(k), str)}
+            if conf:
+                result["configuration"] = conf
         return result
 
     async def list_catalog(self, type_: str, cursor: str | None, limit: int, q: str | None,
@@ -3031,7 +3041,8 @@ def _mock_client_profile(method: str, path: str, kw: dict) -> dict:
 def _mock_response(method: str, path: str, kw: dict) -> Any:
     if path.endswith("/health"):
         return {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": True,
-                "allow_data_change": True, "mock": True}
+                "allow_data_change": True, "mock": True, "platform": "8.3.19.1529",
+                "configuration": {"name": "MCBP", "synonym": "MCBP (mock)", "version": "1.0.0.0"}}
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/start":
         return _mock_client_auth_start(kw)
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/revoke":
