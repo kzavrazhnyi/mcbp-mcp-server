@@ -261,6 +261,18 @@ def _type_list(value: Any) -> list[str] | None:
     return [t.strip() for t in items]
 
 
+def _add_values(value: Any) -> list[str] | None:
+    """`add_values` as a list of value names: a lone string is one value."""
+    if value is None:
+        return None
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list) or not items or not all(
+            isinstance(v, str) and v.strip() for v in items):
+        raise ParameterError("add_values must be a non-empty list of value names, "
+                             "e.g. [\"Червоний\"]")
+    return [v.strip() for v in items]
+
+
 # Arguments of each mode of list_additional_attributes; a call mixing modes is refused rather
 # than silently answering one of them.
 _ATTRIBUTE_LIST_MODES = {
@@ -303,6 +315,7 @@ async def _upsert_additional_attribute(c: MCBPClient, a: dict) -> Any:
     if title is not None and (not isinstance(title, str) or not title.strip()):
         raise ParameterError("title must not be blank")
     types = _type_list(a.get("type"))
+    add_values = _add_values(a.get("add_values"))
     if not a.get("id"):
         missing = [n for n, v in (("title", title), ("type", types), ("set", a.get("set")))
                    if not v]
@@ -312,12 +325,15 @@ async def _upsert_additional_attribute(c: MCBPClient, a: dict) -> Any:
         if a.get("deletion_mark") is not None:
             raise ParameterError("deletion_mark applies to an existing attribute - pass `id`")
         return await c.create_property(title.strip(), types, _uuid("set", a["set"]),
-                                       **_extra(a, *_ATTRIBUTE_OPTIONAL))
+                                       **_extra(a, *_ATTRIBUTE_OPTIONAL),
+                                       **({"add_values": add_values} if add_values else {}))
     fields = _extra(a, "title", "set", "deletion_mark", *_ATTRIBUTE_OPTIONAL)
     if "set" in fields:
         fields["set"] = _uuid("set", fields["set"])
     if types is not None:
         fields["type"] = types
+    if add_values:
+        fields["add_values"] = add_values
     if not fields:
         raise ParameterError("nothing to change - pass at least one field besides `id`")
     return await c.patch_property(_uuid("id", a["id"]), **fields)
@@ -1505,8 +1521,9 @@ TOOLS: dict[str, ToolSpec] = {
         "`type` і `set` (UUID набору з list_additional_attributes) обов'язкові; Ім'я база "
         "генерує як БСП. `type` — масив імен типів: \"String\", \"String:100\", "
         "\"Number:15.2\", \"Date\", \"Boolean\", \"CatalogRef.Номенклатура\", "
-        "\"ExtValues\" (власний список значень реквізиту); недозволений тип — 422 BAD_TYPE з "
-        "переліком. Зміна: лише передані поля; тип реквізиту, що вже має значення, не "
+        "\"ExtValues\" (власний список значень реквізиту; `add_values` додає до нього "
+        "значення, наявне з тією ж назвою не дублюється — `values_added`); недозволений "
+        "тип — 422 BAD_TYPE з переліком. Зміна: лише передані поля; тип реквізиту, що вже має значення, не "
         "змінюється (422 PROPERTY_IN_USE); `set` переносить у інший набір. Вилучення — лише "
         "`deletion_mark: true` (фізично не видаляється). Дубль заголовка в наборі — "
         "попередження `warnings`, не помилка. Підтверди результат користувачу за відповіддю.",
@@ -1523,7 +1540,10 @@ TOOLS: dict[str, ToolSpec] = {
              "required": {"type": "boolean", "description": "Обов'язковий для заповнення"},
              "multiline": {"type": "boolean", "description": "Багаторядкове поле"},
              "deletion_mark": {"type": "boolean",
-                               "description": "Позначка вилучення (лише з `id`)"}},
+                               "description": "Позначка вилучення (лише з `id`)"},
+             "add_values": {"type": "array", "items": {"type": "string"},
+                            "description": "Нові значення власного списку (лише ExtValues), "
+                                           "напр. [\"Червоний\"]"}},
             [],
         ),
         _upsert_additional_attribute,
@@ -1533,7 +1553,9 @@ TOOLS: dict[str, ToolSpec] = {
             "`title`, `type` and `set` (set UUID from list_additional_attributes) are required; "
             "the base generates the Name the BSP way. `type` is an array of type names: "
             "\"String\", \"String:100\", \"Number:15.2\", \"Date\", \"Boolean\", "
-            "\"CatalogRef.Номенклатура\", \"ExtValues\" (the attribute's own value list); a "
+            "\"CatalogRef.Номенклатура\", \"ExtValues\" (the attribute's own value list; "
+            "`add_values` adds names to it, an existing value with the same name is reused, "
+            "not duplicated - see `values_added`); a "
             "type the chart does not allow is 422 BAD_TYPE with the list. Change: only the passed "
             "fields; the type of an attribute that already holds values cannot change (422 "
             "PROPERTY_IN_USE); `set` moves it to another set. Deletion is `deletion_mark: true` "

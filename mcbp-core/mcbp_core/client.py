@@ -1367,9 +1367,11 @@ class MCBPClient:
                               kind: str | None = None, **opt: Any) -> dict:
         """Creates an additional attribute in the set `set` (UUID). `type_` is a type name or a
         list of them ("String", "Number", "Date", "Boolean", "CatalogRef.Номенклатура", ...).
-        BAS generates Имя the way BSP does. `opt`: comment, required, tooltip, multiline.
+        BAS generates Имя the way BSP does. `opt`: comment, required, tooltip, multiline,
+        add_values (value names for an ExtValues attribute's own list).
         A duplicate title is a warning (`warnings`), not an error. POST is not retried.
-        201 {"id","name","title","type","set","created": true[, "warnings"]}."""
+        201 {"id","name","title","type","set","created": true[, "warnings"][, "values_added":
+        [{"id","title","created"}, ...]]}."""
         if not isinstance(title, str) or not title.strip():
             raise ParameterError("title is required and must not be blank")
         if not type_:
@@ -1383,9 +1385,11 @@ class MCBPClient:
 
     async def patch_property(self, property_id: str, **fields: Any) -> dict:
         """Changes an additional attribute: title, type, set, deletion_mark, comment, tooltip,
-        required (only the passed ones; None = untouched). Имя is never changed. A type change
-        of an attribute that already holds values is 422 PROPERTY_IN_USE.
-        {"id","changed": [{"field","old","new"}, ...]}."""
+        required, add_values (only the passed ones; None = untouched). Имя is never changed. A
+        type change of an attribute that already holds values is 422 PROPERTY_IN_USE;
+        add_values on a non-ExtValues attribute is 422 BAD_PARAMETER.
+        {"id","changed": [{"field","old","new"}, ...][, "values_added": [{"id","title",
+        "created"}, ...]]}."""
         pid = _uuid_arg("id", property_id)
         body = {k: v for k, v in fields.items() if v is not None}
         if "title" in body and (not isinstance(body["title"], str) or not body["title"].strip()):
@@ -3198,6 +3202,16 @@ _MOCK_PROPERTY = {"id": "5b0e1c7a-0000-4000-8000-000000000001", "title": "Кол
                   "deletion_mark": False}
 
 
+def _mock_values_added(body: dict) -> dict:
+    """`values_added` of a /properties answer: every requested value as newly created."""
+    names = body.get("add_values")
+    if not names:
+        return {}
+    return {"values_added": [
+        {"id": f"5b0e1c7a-0000-4000-8000-{i:012d}", "title": n, "created": True}
+        for i, n in enumerate(names, start=2)]}
+
+
 def _mock_properties(method: str, path: str, kw: dict) -> dict:
     """Stateless mock of /ai/v1/properties: echoes the request in the success shape."""
     params = kw.get("params") or {}
@@ -3212,7 +3226,8 @@ def _mock_properties(method: str, path: str, kw: dict) -> dict:
                     "name": f"{body.get('title', '')}_5b0e1c7a000040008000000000000001",
                     "title": body.get("title"),
                     "type": [types] if isinstance(types, str) else types,
-                    "set": body.get("set"), "created": True}
+                    "set": body.get("set"), "created": True,
+                    **_mock_values_added(body)}
         return {"data": [_MOCK_PROPERTY], "cursor": None}
     if path.startswith("ai/v1/properties/values/"):
         kind, type_, object_id = path.split("/")[-3:]
@@ -3231,7 +3246,8 @@ def _mock_properties(method: str, path: str, kw: dict) -> dict:
     property_id = path.rsplit("/", 1)[-1]
     if method == "PATCH":
         return {"id": property_id, "changed": [
-            {"field": k, "old": _MOCK_PROPERTY.get(k), "new": v} for k, v in body.items()]}
+            {"field": k, "old": _MOCK_PROPERTY.get(k), "new": v} for k, v in body.items()
+            if k != "add_values"], **_mock_values_added(body)}
     return {**_MOCK_PROPERTY, "id": property_id, "sets": [_MOCK_PROPERTY["set"]],
             "ext_values": False}
 

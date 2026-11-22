@@ -538,9 +538,13 @@ _PROPERTY_TYPE_PREFIX = "ПланВидовХарактеристик."
 # its title, name, types and sets stay readable, like `name` in the `additional` block; only
 # its free text (comment, tooltip) goes through the usual masking.
 _PROPERTY_VALUE_KEYS = ("value", "old", "new")
+# `values_added` of a create/change answer: [{id, title, created}] - names of the attribute's
+# own (ExtValues) value list the model itself asked to add; configuration, stays readable.
+_PROPERTY_VALUES_ADDED_KEY = "values_added"
 _PROPERTY_DEFINITION_OPEN_KEYS = frozenset({
     "id", "property", "title", "name", "types", "type", "set", "sets", "kind",
     "deletion_mark", "ext_values", "required", "multiline", "created", "warnings",
+    _PROPERTY_VALUES_ADDED_KEY,
 })
 _PROPERTY_OPEN_CHANGE_FIELDS = frozenset({
     "title", "type", "set", "deletion_mark", "required", "multiline",
@@ -559,9 +563,12 @@ def _looks_like_property_definition(value: dict[str, Any]) -> bool:
 
 
 def _looks_like_property_patch(value: dict[str, Any]) -> bool:
-    """PATCH /properties/{id}: exactly {"id", "changed": [{field, old, new}, ...]}."""
+    """PATCH /properties/{id}: exactly {"id", "changed": [{field, old, new}, ...]}, plus an
+    optional `values_added` list."""
     changed = value.get("changed")
-    return value.keys() == {"id", "changed"} and isinstance(changed, list) and all(
+    return (value.keys() - {_PROPERTY_VALUES_ADDED_KEY} == {"id", "changed"}
+            and isinstance(value.get(_PROPERTY_VALUES_ADDED_KEY, []), list)
+            and isinstance(changed, list)) and all(
         isinstance(item, dict) and _CHANGE_ENTRY_KEYS <= item.keys() for item in changed)
 
 
@@ -1019,7 +1026,7 @@ class Masker:
                 return {k: v if k in _PROPERTY_DEFINITION_OPEN_KEYS
                         else self._walk_value(k, v, context) for k, v in value.items()}
             if _looks_like_property_patch(value):
-                return {"id": value["id"], "changed": [
+                return {**value, "changed": [
                     item if item.get("field") in _PROPERTY_OPEN_CHANGE_FIELDS
                     else self._mask_change_entry(item, context) for item in value["changed"]]}
             if _looks_like_change_entry(value):

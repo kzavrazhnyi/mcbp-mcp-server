@@ -75,7 +75,7 @@ server is the thin MCP adapter in front of it.
 | `exchange_run` *(gated)* | Run the exchange with a node now — sends the node's whole unprocessed queue |
 | `exchange_result` | What happened to one object in the exchange: queue rows (`processed`, error text, `receiver_id`) and the match |
 | `list_additional_attributes` | Additional attributes (додаткові реквізити): a list by owner type/set/text, one attribute's card, or one object's values |
-| `upsert_additional_attribute` *(gated)* | Create or update one additional attribute (title, type, set, tooltip, multiline) |
+| `upsert_additional_attribute` *(gated)* | Create or update one additional attribute (title, type, set, tooltip, multiline, add_values for an ExtValues list) |
 | `set_additional_attribute_values` *(gated)* | Set or remove additional-attribute values of one object |
 
 Prompt `setup_exchange` (arguments `object_type`, optional `target_base`): for an agent connected to

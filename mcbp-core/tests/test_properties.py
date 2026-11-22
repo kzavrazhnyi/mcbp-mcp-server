@@ -113,6 +113,33 @@ async def test_patch_property_sends_only_passed_fields():
         await client.shutdown()
 
 
+VALUE_ID = "5b0e1c7a-0000-4000-8000-000000000002"
+VALUES_ADDED = [{"id": VALUE_ID, "title": "Червоний", "created": True}]
+
+
+@respx.mock
+async def test_add_values_reaches_the_post_and_patch_bodies():
+    post = respx.post(f"{BASE}/properties").mock(return_value=httpx.Response(
+        201, json={"id": PROP_ID, "created": True, "values_added": VALUES_ADDED}))
+    patch = respx.patch(f"{BASE}/properties/{PROP_ID}").mock(return_value=httpx.Response(
+        200, json={"id": PROP_ID, "changed": [], "values_added": VALUES_ADDED}))
+    client = await _live()
+    try:
+        created = await TOOLS["upsert_additional_attribute"].executor(client, {
+            "title": "Колір", "type": ["ExtValues"], "set": SET_ID,
+            "add_values": [" Червоний ", "Синій"]})
+        assert json.loads(post.calls.last.request.content) == {
+            "title": "Колір", "type": ["ExtValues"], "set": SET_ID,
+            "add_values": ["Червоний", "Синій"]}
+        assert created["values_added"] == VALUES_ADDED
+        changed = await TOOLS["upsert_additional_attribute"].executor(
+            client, {"id": PROP_ID, "add_values": ["Червоний"]})
+        assert json.loads(patch.calls.last.request.content) == {"add_values": ["Червоний"]}
+        assert changed == {"id": PROP_ID, "changed": [], "values_added": VALUES_ADDED}
+    finally:
+        await client.shutdown()
+
+
 @respx.mock
 async def test_patch_property_values_body():
     route = respx.patch(url__startswith=f"{BASE}/properties/values/").mock(
@@ -351,6 +378,17 @@ async def test_upsert_with_id_patches_only_passed_fields(client):
         "deletion_mark": True, "type": ["CatalogRef.Номенклатура"]})
 
 
+async def test_upsert_wraps_a_lone_add_value_on_both_paths(client):
+    await TOOLS["upsert_additional_attribute"].executor(
+        client, {"title": "Колір", "type": "ExtValues", "set": SET_ID, "add_values": "Червоний"})
+    assert client.calls[-1] == ("create_property", ("Колір", ["ExtValues"], SET_ID),
+                                {"add_values": ["Червоний"]})
+    await TOOLS["upsert_additional_attribute"].executor(
+        client, {"id": PROP_ID, "title": "Колір", "add_values": ["Синій"]})
+    assert client.calls[-1] == ("patch_property", (PROP_ID,), {
+        "title": "Колір", "add_values": ["Синій"]})
+
+
 @pytest.mark.parametrize("args", [
     {"title": "", "type": ["String"], "set": SET_ID},
     {"title": "   ", "type": ["String"], "set": SET_ID},
@@ -362,6 +400,11 @@ async def test_upsert_with_id_patches_only_passed_fields(client):
     {"id": PROP_ID},
     {"id": PROP_ID, "set": "abc"},
     {"id": "abc", "title": "X"},
+    {"id": PROP_ID, "add_values": []},
+    {"id": PROP_ID, "add_values": ["Червоний", " "]},
+    {"id": PROP_ID, "add_values": [1]},
+    {"id": PROP_ID, "add_values": {"a": "b"}},
+    {"title": "Колір", "type": ["ExtValues"], "set": SET_ID, "add_values": [""]},
 ])
 async def test_upsert_rejects_bad_arguments_before_any_call(client, args):
     with pytest.raises(ParameterError):
@@ -529,3 +572,31 @@ def test_property_patch_keeps_structural_changes_and_masks_free_text():
     title, comment = masker.mask(payload)["changed"]
     assert (title["old"], title["new"]) == ("Колір", "Колір товару")
     assert comment["new"] != "Іваненко просив"
+
+
+def test_values_added_stays_readable_and_keeps_the_patch_shape():
+    masker = Masker(secret="t", policy=DEFAULT_POLICY)  # nothing open
+    payload = {"id": PROP_ID, "changed": [
+        {"field": "title", "old": "Колір", "new": "Колір товару"},
+        {"field": "comment", "old": None, "new": "Іваненко просив"}],
+        "values_added": VALUES_ADDED}
+    out = masker.mask(payload)
+    title, comment = out["changed"]
+    assert (title["old"], title["new"]) == ("Колір", "Колір товару")
+    assert comment["new"] != "Іваненко просив"
+    assert out["values_added"] == VALUES_ADDED
+    only_values = {"id": PROP_ID, "changed": [], "values_added": VALUES_ADDED}
+    assert masker.mask(only_values) == only_values
+    created = {"id": PROP_ID, "name": "Колір_ab12", "title": "Колір", "type": ["ExtValues"],
+               "set": SET_ID, "created": True, "values_added": VALUES_ADDED}
+    assert masker.mask(created) == created
+
+
+async def test_mock_mode_answers_values_added():
+    client = MCBPClient(ConnectionConfig(user="u", mock=True))
+    created = await client.create_property("Колір", ["ExtValues"], SET_ID,
+                                           add_values=["Червоний"])
+    assert [v["title"] for v in created["values_added"]] == ["Червоний"]
+    changed = await client.patch_property(PROP_ID, add_values=["Синій"])
+    assert changed["changed"] == []
+    assert [v["title"] for v in changed["values_added"]] == ["Синій"]
