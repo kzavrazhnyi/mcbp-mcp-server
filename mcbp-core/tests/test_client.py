@@ -652,7 +652,8 @@ async def test_health_returns_real_key_true():
     await client.startup()
     try:
         result = await client.health()
-        assert result == {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": False}
+        assert result == {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": False,
+                          "allow_data_change": None}
     finally:
         await client.shutdown()
 

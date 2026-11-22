@@ -74,7 +74,11 @@ The full tool list, every environment variable, security notes and troubleshooti
 
 ## Tools
 
-18 read tools are always registered; 15 write tools appear only when `MCP_ALLOW_WRITE=1`.
+18 read tools are always registered; 15 write tools appear only when `MCP_ALLOW_WRITE=1`
+**and** the base allows data change by AI. That second switch lives in BAS: register
+«Загальні налаштування», setting «AI зміна даних дозволена» (`health` reports it as
+`allow_data_change`). While it is off the write tools are hidden and every write route answers
+`403 DATA_CHANGE_DISABLED`; a base too old to send the field is not restricted by it.
 The `setup_exchange` prompt walks an agent connected to two bases through setting up and testing
 an exchange (`exchange_enqueue → exchange_run → exchange_result`).
 

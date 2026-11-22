@@ -13,7 +13,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from mcbp_core.errors import MCBPError
+from mcbp_core.errors import DataChangeDisabledError, MCBPError
 from mcbp_core.tools import ToolSpec, tool_specs
 from mcp import types
 from mcp.server.context import ServerRequestContext
@@ -52,14 +52,25 @@ def _to_tool(spec: ToolSpec) -> types.Tool:
     )
 
 
+async def _data_change_off(app: AppContext) -> bool:
+    """True only when the base itself reports its "AI data change allowed" switch off. The gate
+    refreshes at most once per its TTL, so this is not a 1C round-trip per call."""
+    return app.data_change is not None and await app.data_change.allowed() is False
+
+
 def make_on_list_tools(allow_write: bool) -> _OnListTools:
     # Built once at registration time so `tools/list` is deterministic and cheap — the registry
     # order from `tool_specs()` is preserved, never sorted.
-    tools = [_to_tool(spec) for spec in tool_specs(surface="mcp", include_write=allow_write)]
+    specs = tool_specs(surface="mcp", include_write=allow_write)
+    tools = [_to_tool(spec) for spec in specs]
+    read_only = [tool for spec, tool in zip(specs, tools, strict=True) if spec.read_only]
 
     async def on_list_tools(
         ctx: ServerRequestContext[AppContext, Any], params: types.PaginatedRequestParams | None,
     ) -> types.ListToolsResult:
+        # The base's own switch hides the write tools exactly as MCP_ALLOW_WRITE=0 would.
+        if allow_write and await _data_change_off(ctx.lifespan_context):
+            return types.ListToolsResult(tools=read_only)
         return types.ListToolsResult(tools=tools)
 
     return on_list_tools
@@ -80,6 +91,10 @@ def make_on_call_tool(allow_write: bool) -> _OnCallTool:
                 content=[types.TextContent(type="text", text=f"Unknown tool: {params.name}")],
             )
         arguments = params.arguments or {}
+        app = ctx.lifespan_context
+        if not spec.read_only and await _data_change_off(app):
+            # BAS would answer 403 DATA_CHANGE_DISABLED anyway — skip the round-trip.
+            return to_tool_error(DataChangeDisabledError())
         try:
             # Before the executor, not inside it: executors index required arguments directly, so
             # a misspelled name would otherwise surface as a bare KeyError the model cannot act on.
@@ -87,9 +102,11 @@ def make_on_call_tool(allow_write: bool) -> _OnCallTool:
             # The client is chosen per REQUEST, not per process: an HTTP caller presenting its
             # own BAS account runs as that account (see `credentials.py`), stdio always runs as
             # the env identity.
-            async with client_for(ctx.lifespan_context) as client:
+            async with client_for(app) as client:
                 result = await spec.executor(client, arguments)
         except MCBPError as exc:
+            if isinstance(exc, DataChangeDisabledError) and app.data_change is not None:
+                app.data_change.mark_disabled()  # switched off since the last refresh
             if is_fatal(exc):
                 raise to_mcp_error(exc) from exc
             log.warning("%s -> %s: %s", spec.name, exc.code, exc.message)

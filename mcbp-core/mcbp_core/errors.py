@@ -92,6 +92,26 @@ class NotConfirmedError(ForbiddenError):
     code = "NOT_CONFIRMED"
 
 
+class DataChangeDisabledError(ForbiddenError):
+    """The base's administrator switched data change by AI off (general setting
+    `AllowDataChange`, `GET /ai/v1/health` -> `allow_data_change: false`): every write route
+    answers 403 `DATA_CHANGE_DISABLED`. A `ForbiddenError` subclass so 403 handling stays one
+    branch, but unlike a missing right nothing else will succeed either — the message tells the
+    model to stop, not to retry or pick another object."""
+
+    code = "DATA_CHANGE_DISABLED"
+
+    def __init__(self, message: str = "", *, code: str | None = None,
+                 http_status: int | None = None):
+        text = ("Data changes are disabled in this base by its administrator "
+                "(AI data change is switched off). Do not retry this or any other write tool; "
+                "tell the user that changes must be made in BAS directly or enabled by the "
+                "administrator.")
+        if message:
+            text = f"{text} BAS said: {message}"
+        super().__init__(text, code=code, http_status=http_status)
+
+
 class NotConnectedError(MCBPError):
     """No active connection to BAS — the host application must connect before issuing requests
     (`MCBPClient.startup()`, or whatever login step that host exposes)."""

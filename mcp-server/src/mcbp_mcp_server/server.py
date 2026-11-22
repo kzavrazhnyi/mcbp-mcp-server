@@ -19,6 +19,7 @@ import sys
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import anyio
 from mcbp_core.client import ConnectionConfig, MCBPClient
@@ -27,6 +28,7 @@ from mcp.server.stdio import stdio_server
 
 from mcbp_mcp_server import __version__
 from mcbp_mcp_server.credentials import ClientPool
+from mcbp_mcp_server.data_change import DataChangeGate
 from mcbp_mcp_server.prompts import make_on_get_prompt, make_on_list_prompts
 from mcbp_mcp_server.registry import make_on_call_tool, make_on_list_tools
 
@@ -125,16 +127,19 @@ class AppContext:
     """`client` is the process identity from the `ONEC_*` env block — the only identity on stdio,
     and the fallback for an HTTP request that presents no `Authorization` header. `pool` holds the
     per-caller clients built from such a header; it stays empty on stdio, which has no headers at
-    all, so nothing there can ever populate it."""
+    all, so nothing there can ever populate it. `data_change` mirrors the base's own "AI data
+    change allowed" switch (see `data_change.py`); `None` = not enforced by this process."""
 
     client: MCBPClient
     allow_write: bool
     pool: ClientPool | None = None
+    data_change: DataChangeGate | None = None
 
 
-async def _probe_health(client: MCBPClient) -> None:
+async def _probe_health(client: MCBPClient) -> dict[str, Any] | None:
     """Advisory only — never raises, never blocks startup. A server that refuses to start is
-    worse than one that warns."""
+    worse than one that warns. Returns the health payload (None on failure) so the caller can
+    seed the data-change gate without a second round-trip."""
     try:
         result = await client.health()
     except Exception as e:  # noqa: BLE001 - advisory probe must never block startup
@@ -142,12 +147,18 @@ async def _probe_health(client: MCBPClient) -> None:
             "MCBP_AI health probe failed (%s) — every route may be unreachable until this "
             "clears", e,
         )
-        return
+        return None
+    if result.get("allow_data_change") is False:
+        log.warning(
+            "MCBP_AI health probe returned allow_data_change:false — data change by AI is "
+            "switched off in this base; write tools are hidden whatever MCP_ALLOW_WRITE says."
+        )
     if result.get("key") is False:
         log.warning(
             "MCBP_AI health probe returned key:false — the infobase key does not match the "
             "publication; every route except /health will answer 403 KEY_MISMATCH until fixed."
         )
+    return result
 
 
 @asynccontextmanager
@@ -164,9 +175,11 @@ async def lifespan(server: Server[AppContext]) -> AsyncIterator[AppContext]:
     ))
     await client.startup()
     pool = ClientPool(settings)
+    gate = DataChangeGate(client)
     try:
-        await _probe_health(client)
-        yield AppContext(client=client, allow_write=settings.allow_write, pool=pool)
+        gate.update(await _probe_health(client))
+        yield AppContext(client=client, allow_write=settings.allow_write, pool=pool,
+                         data_change=gate)
     finally:
         await pool.aclose()
         await client.shutdown()

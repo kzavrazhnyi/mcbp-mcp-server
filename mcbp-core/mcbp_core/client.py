@@ -36,6 +36,7 @@ from mcbp_core.errors import (
     ConflictError,
     ConversionChangedError,
     ConversionNotConfiguredError,
+    DataChangeDisabledError,
     ForbiddenError,
     KeyMismatchError,
     LicenseRequiredError,
@@ -68,6 +69,7 @@ _ERROR_CODE_MAP: dict[str, type[MCBPError]] = {
     "BAD_PARAMETER": ParameterError,
     "NOT_FOUND": NotFoundError,
     "FORBIDDEN": ForbiddenError,
+    "DATA_CHANGE_DISABLED": DataChangeDisabledError,
     "NOT_CONFIRMED": NotConfirmedError,
     "WRITE_FAILED": WriteFailedError,
     "PLUS_REQUIRED": PlusRequiredError,
@@ -147,6 +149,9 @@ class ConnectionConfig:
     pool_max: int = 10
     mock: bool = True
     verify: bool = True
+    # Mock mode only: what the mocked `/health` reports as `allow_data_change` (None = the field
+    # is absent, as from an older base). Lets tests cover a base with data change switched off.
+    mock_allow_data_change: bool | None = True
 
 
 def _classify_legacy_error(text: str) -> Exception:
@@ -456,7 +461,13 @@ class MCBPClient:
                 return _mock_bug_upsert(kw, self._cfg.user)
             if path.startswith("ai/v1/functions/") and path.rstrip("/").endswith("/tasks"):
                 return _mock_function_tasks(method, path, kw, self._cfg.user)
-            return _mock_response(method, path, kw)
+            result = _mock_response(method, path, kw)
+            if path.endswith("/health") and isinstance(result, dict):
+                if self._cfg.mock_allow_data_change is None:
+                    result.pop("allow_data_change", None)
+                else:
+                    result["allow_data_change"] = self._cfg.mock_allow_data_change
+            return result
         assert self._client is not None, "MCBPClient.startup() not called"
 
         # 1C does not decode '+' as a space, and httpx builds its query with quote_plus — so any
@@ -549,6 +560,10 @@ class MCBPClient:
             "key": bool(payload.get("key", True)),
             # A base without the field grants no admin rights: the /ui hides admin-only items.
             "is_admin": payload.get("is_admin") is True,
+            # Per-base "AI data change allowed" switch. Absent (older base) = None: unknown, and
+            # such a base does not enforce it — never guessed as False.
+            "allow_data_change": (payload["allow_data_change"]
+                                  if isinstance(payload.get("allow_data_change"), bool) else None),
         }
         # Older bases send no release string: the key stays absent rather than null.
         version = payload.get("version")
@@ -3015,7 +3030,8 @@ def _mock_client_profile(method: str, path: str, kw: dict) -> dict:
 
 def _mock_response(method: str, path: str, kw: dict) -> Any:
     if path.endswith("/health"):
-        return {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": True, "mock": True}
+        return {"status": "ok", "service": "MCBP_AI", "key": True, "is_admin": True,
+                "allow_data_change": True, "mock": True}
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/start":
         return _mock_client_auth_start(kw)
     if method == "POST" and path.rstrip("/") == "ai/v1/client/auth/revoke":

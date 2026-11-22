@@ -154,6 +154,10 @@ and the service's own URL templates start with `ai/v1`.
 
 - Read-only unless you deliberately set `MCP_ALLOW_WRITE=1`. The write tools are not merely hidden
   — they are never registered, so they cannot be invoked.
+- The base administrator can switch writes off regardless of `MCP_ALLOW_WRITE`: register
+  «Загальні налаштування», setting «AI зміна даних дозволена». While it is off, `health` reports
+  `allow_data_change: false`, the server hides the write tools (re-checked at most once a
+  minute) and refuses a write call with `DATA_CHANGE_DISABLED` without calling BAS.
 - Credentials live only in the MCP client's env block; nothing is written to disk by this server.
 - The BAS side adds its own checks: the publication's user rights, plus an infobase-key check. If
   the key does not match, `health` reports `key: false` and every other route answers
