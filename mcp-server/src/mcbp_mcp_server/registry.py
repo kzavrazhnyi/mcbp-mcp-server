@@ -17,6 +17,8 @@ from mcbp_core.errors import DataChangeDisabledError, MCBPError
 from mcbp_core.tools import ToolSpec, tool_specs
 from mcp import types
 from mcp.server.context import ServerRequestContext
+from mcp.server.subscriptions import SubscriptionBus, ToolsListChanged
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from mcbp_mcp_server.credentials import client_for
 from mcbp_mcp_server.errors import is_fatal, to_mcp_error, to_tool_error
@@ -58,7 +60,24 @@ async def _data_change_off(app: AppContext) -> bool:
     return app.data_change is not None and await app.data_change.allowed() is False
 
 
-def make_on_list_tools(allow_write: bool) -> _OnListTools:
+async def _announce_change(
+    ctx: ServerRequestContext[AppContext, Any], bus: SubscriptionBus | None,
+) -> None:
+    """Announces a switch flip from the request that observed it (nothing polls in the background,
+    so a flip is noticed on the next `tools/list` or write `tools/call` — see README). 2026-07-28
+    clients get `ToolsListChanged` on their `subscriptions/listen` streams via `bus`; older
+    (handshake-era) clients get `notifications/tools/list_changed` on this request's session."""
+    gate = ctx.lifespan_context.data_change
+    if gate is None or not gate.take_change():
+        return
+    if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
+        if bus is not None:
+            await bus.publish(ToolsListChanged())
+    else:
+        await ctx.session.send_tool_list_changed()
+
+
+def make_on_list_tools(allow_write: bool, bus: SubscriptionBus | None = None) -> _OnListTools:
     # Built once at registration time so `tools/list` is deterministic and cheap — the registry
     # order from `tool_specs()` is preserved, never sorted.
     specs = tool_specs(surface="mcp", include_write=allow_write)
@@ -68,15 +87,17 @@ def make_on_list_tools(allow_write: bool) -> _OnListTools:
     async def on_list_tools(
         ctx: ServerRequestContext[AppContext, Any], params: types.PaginatedRequestParams | None,
     ) -> types.ListToolsResult:
+        if not allow_write:  # the base's switch cannot change a read-only list
+            return types.ListToolsResult(tools=tools)
         # The base's own switch hides the write tools exactly as MCP_ALLOW_WRITE=0 would.
-        if allow_write and await _data_change_off(ctx.lifespan_context):
-            return types.ListToolsResult(tools=read_only)
-        return types.ListToolsResult(tools=tools)
+        off = await _data_change_off(ctx.lifespan_context)
+        await _announce_change(ctx, bus)
+        return types.ListToolsResult(tools=read_only if off else tools)
 
     return on_list_tools
 
 
-def make_on_call_tool(allow_write: bool) -> _OnCallTool:
+def make_on_call_tool(allow_write: bool, bus: SubscriptionBus | None = None) -> _OnCallTool:
     specs: dict[str, ToolSpec] = {
         spec.name: spec for spec in tool_specs(surface="mcp", include_write=allow_write)
     }
@@ -92,9 +113,12 @@ def make_on_call_tool(allow_write: bool) -> _OnCallTool:
             )
         arguments = params.arguments or {}
         app = ctx.lifespan_context
-        if not spec.read_only and await _data_change_off(app):
-            # BAS would answer 403 DATA_CHANGE_DISABLED anyway — skip the round-trip.
-            return to_tool_error(DataChangeDisabledError())
+        if not spec.read_only:
+            off = await _data_change_off(app)
+            await _announce_change(ctx, bus)
+            if off:
+                # BAS would answer 403 DATA_CHANGE_DISABLED anyway — skip the round-trip.
+                return to_tool_error(DataChangeDisabledError())
         try:
             # Before the executor, not inside it: executors index required arguments directly, so
             # a misspelled name would otherwise surface as a bare KeyError the model cannot act on.
@@ -107,6 +131,7 @@ def make_on_call_tool(allow_write: bool) -> _OnCallTool:
         except MCBPError as exc:
             if isinstance(exc, DataChangeDisabledError) and app.data_change is not None:
                 app.data_change.mark_disabled()  # switched off since the last refresh
+                await _announce_change(ctx, bus)
             if is_fatal(exc):
                 raise to_mcp_error(exc) from exc
             log.warning("%s -> %s: %s", spec.name, exc.code, exc.message)

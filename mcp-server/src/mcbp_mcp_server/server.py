@@ -23,8 +23,9 @@ from typing import Any
 
 import anyio
 from mcbp_core.client import ConnectionConfig, MCBPClient
-from mcp.server import Server
+from mcp.server import InitializationOptions, NotificationOptions, Server
 from mcp.server.stdio import stdio_server
+from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 
 from mcbp_mcp_server import __version__
 from mcbp_mcp_server.credentials import ClientPool
@@ -185,6 +186,20 @@ async def lifespan(server: Server[AppContext]) -> AsyncIterator[AppContext]:
         await client.shutdown()
 
 
+class _Server(Server[AppContext]):
+    """Declares `tools.listChanged` to handshake-era clients: the base's data-change switch can
+    hide or restore the write tools mid-session (see `registry._announce_change`). Every transport
+    builds its `initialize` result from this method with no arguments. 2026-07-28 clients get the
+    flag derived from the `subscriptions/listen` handler instead."""
+
+    def create_initialization_options(
+        self, notification_options: NotificationOptions | None = None, *args: Any, **kwargs: Any,
+    ) -> InitializationOptions:
+        return super().create_initialization_options(
+            notification_options or NotificationOptions(tools_changed=True), *args, **kwargs,
+        )
+
+
 def create_server() -> Server[AppContext]:
     """Constructs the low-level `Server` without touching the network — the client is built
     lazily by `lifespan` only once a client actually connects. Reads only `MCP_ALLOW_WRITE` (via
@@ -192,12 +207,14 @@ def create_server() -> Server[AppContext]:
     second parsing rule) so the tool SET is decidable without live `ONEC_*` credentials; the
     per-request `AppContext.allow_write` set up by `lifespan` carries the identical value."""
     allow_write = _truthy(os.environ.get("MCP_ALLOW_WRITE"))
-    return Server(
+    bus = InMemorySubscriptionBus()  # carries ToolsListChanged to 2026-07-28 listen streams
+    return _Server(
         "mcbp-ai",
         version=__version__,
         lifespan=lifespan,
-        on_list_tools=make_on_list_tools(allow_write),
-        on_call_tool=make_on_call_tool(allow_write),
+        on_list_tools=make_on_list_tools(allow_write, bus),
+        on_call_tool=make_on_call_tool(allow_write, bus),
+        on_subscriptions_listen=ListenHandler(bus),
         on_list_prompts=make_on_list_prompts(),
         on_get_prompt=make_on_get_prompt(),
     )

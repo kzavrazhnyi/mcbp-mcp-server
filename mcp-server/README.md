@@ -158,6 +158,12 @@ and the service's own URL templates start with `ai/v1`.
   «Загальні налаштування», setting «AI зміна даних дозволена». While it is off, `health` reports
   `allow_data_change: false`, the server hides the write tools (re-checked at most once a
   minute) and refuses a write call with `DATA_CHANGE_DISABLED` without calling BAS.
+  The server declares `tools.listChanged` and announces a flip of the switch — but only from
+  inside the next `tools/list` or write `tools/call` that notices it (nothing polls in the
+  background, and the low-level server has no session to notify outside a request). 2026-07-28
+  clients receive it on every open `subscriptions/listen` stream; older clients receive
+  `notifications/tools/list_changed` only on the session that made that request — other sessions
+  see the new list on their next `tools/list`.
 - Credentials live only in the MCP client's env block; nothing is written to disk by this server.
 - The BAS side adds its own checks: the publication's user rights, plus an infobase-key check. If
   the key does not match, `health` reports `key: false` and every other route answers
