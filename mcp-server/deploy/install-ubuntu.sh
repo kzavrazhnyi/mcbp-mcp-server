@@ -19,8 +19,8 @@
 # checked before it is published); --wheels DIR installs wheels already on disk (offline).
 set -euo pipefail
 
-MCBP_VERSION="0.2.8"
-CORE_VERSION="0.1.40"
+MCBP_VERSION="0.2.9"
+CORE_VERSION="0.1.43"
 TESTPYPI="https://test.pypi.org/simple/"
 
 PREFIX="/opt/mcbp-mcp"

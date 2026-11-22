@@ -1,6 +1,6 @@
 [project]
 name = "mcbp"
-version = "0.2.8"
+version = "0.2.9"
 description = "Standalone MCP server exposing BAS MCBP_AI (mcbp.plus)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ dependencies = [
     # name was unclaimed — publish mcbp-core first, then this constraint is what keeps the pair
     # in step. `tool.uv.sources` below only redirects the LOCAL checkout; it is not part of the
     # published wheel's metadata.
-    "mcbp-core>=0.1.31,<0.2",
+    "mcbp-core>=0.1.43,<0.2",
     "anyio>=4.0",
 ]
 

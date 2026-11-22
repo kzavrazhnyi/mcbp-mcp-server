@@ -19,8 +19,8 @@
 param(
     [string] $OutDir = "C:\PYTHON\mcbp\tmp\mcbp-mcp-portable",
     [string] $PythonVersion = "3.11.9",
-    [string] $McbpVersion = "0.2.8",
-    [string] $McbpCoreVersion = "0.1.40",
+    [string] $McbpVersion = "0.2.9",
+    [string] $McbpCoreVersion = "0.1.43",
     [string] $CacheDir = (Join-Path $env:TEMP "mcbp-portable-build"),
     [switch] $Force,
     [switch] $FromTestPypi
