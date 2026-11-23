@@ -308,8 +308,27 @@ async def test_describe_metadata_q_no_match_returns_available_names_fallback():
     assert result["attributes"] == []
     assert result["attributes_omitted"] == result["attributes_total"] == 5
     assert set(result["available_names"]) == {
-        "Naimenovanie", "Kod", "Pokupatel", "Postavshchik", "KodPoEDRPOU",
+        "Naimenovanie (Найменування)", "Kod (Код)", "Pokupatel (Покупець)",
+        "Postavshchik (Постачальник)", "KodPoEDRPOU (Код за ЄДРПОУ)",
     }
+
+
+async def test_describe_metadata_q_miss_lists_synonyms_to_match_by_meaning():
+    # The user's wording is not a substring of any name/synonym, but means «Код за ЄДРПОУ».
+    client = MCBPClient(ConnectionConfig(mock=True))
+    await client.startup()
+    result = await client.describe_metadata("Catalogs", "Контрагенты", q="ідентифікаційний код")
+    assert result["attributes"] == []
+    assert "KodPoEDRPOU (Код за ЄДРПОУ)" in result["available_names"]
+
+
+def test_name_with_synonym_omits_empty_or_same_synonym():
+    from mcbp_core.client import _name_with_synonym
+
+    assert _name_with_synonym({"name": "Kod", "synonym": ""}) == "Kod"
+    assert _name_with_synonym({"name": "Kod"}) == "Kod"
+    assert _name_with_synonym({"name": "Код", "synonym": "Код"}) == "Код"
+    assert _name_with_synonym({"name": "Kod", "synonym": "Код"}) == "Kod (Код)"
 
 
 async def test_describe_metadata_q_combined_with_tabular_section():

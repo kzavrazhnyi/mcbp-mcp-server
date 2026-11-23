@@ -266,12 +266,24 @@ def _matches_q(attr: dict, q_lower: str) -> bool:
     return q_lower in name.lower() or q_lower in synonym.lower()
 
 
+def _name_with_synonym(attr: dict) -> str:
+    """`"Name (Synonym)"` for the miss fallback; just `"Name"` when the synonym is empty or the
+    same as the name. The name stays first, so it is still read off as the field to pass on."""
+    name = attr.get("name") or ""
+    synonym = attr.get("synonym") or ""
+    if not synonym or synonym == name:
+        return name
+    return f"{name} ({synonym})"
+
+
 def _filter_header_attributes(view: dict, q: str) -> dict:
     """Narrows `standard_attributes`/`attributes` (header reqisites only — tabular sections are
     untouched) to those matching `q` by name OR synonym, case-insensitive. No match at all does
     NOT return emptiness or the full tree: it falls back to a flat list of every available name
     (`available_names`), per `onec-universality` — a narrowed/empty view must list real names so
-    the caller can self-correct."""
+    the caller can self-correct. Each entry carries its synonym (`"Name (Synonym)"`): the user's
+    wording is often a form caption that is neither the name nor a substring of the synonym, and
+    the model can only match it by meaning if the synonyms are in front of it."""
     q_lower = q.lower()
     std = view.get("standard_attributes") or []
     attrs = view.get("attributes") or []
@@ -281,7 +293,7 @@ def _filter_header_attributes(view: dict, q: str) -> dict:
     matched_count = len(std_matched) + len(attrs_matched)
 
     if matched_count == 0:
-        available_names = [a.get("name") for a in std] + [a.get("name") for a in attrs]
+        available_names = [_name_with_synonym(a) for a in std + attrs]
         return {
             **view,
             "standard_attributes": [],

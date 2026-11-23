@@ -15,7 +15,7 @@ _UA_DESCRIPTION_SHA256 = {
     "get_schema": "d3be181efe3a5b719deefee74d22116ebfbba11700ecd5e2aa7792b4a258faa7",
     "get_register_balance": "f462931253c71c3526cf4f607d7ad768e18726bd51f4d8482e0983c2a4e147fe",
     "list_metadata": "935700ebfeaa3aa4bdffffb13bf0baf4f8d5788ec75ffb4468a69811c8aa433d",
-    "describe_metadata": "b6f8a9b8458d7dc1be7b1c039960816a8482fd9499fd04e29dcbcbf3e338a920",
+    "describe_metadata": "4f83b5b93b3868e8ad9afbf99d7ce18f910f835f1f5d776666383407f356f216",
     "filter_catalog": "5080b83d6548bc43df1c1aa93763131236201e05c91884767e4d341091375558",
     "get_object": "6a7ac39616e2ea5e4a70732efecb444604eeea96dcf649e311bf5c53f0766876",
     "health": "2b472b33a1af9c2bbfbe89bbb2434dd9a85ad05c91208a7e24d856e8edc9f365",

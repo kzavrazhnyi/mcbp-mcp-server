@@ -509,7 +509,9 @@ _DESCRIBE_METADATA_DESC = (
     "filtering; never guess them. Tabular sections come as a list (name, synonym, attribute "
     "count); pass tabular_section=\"<name>\" for their attributes. Without `q` all header "
     "attributes come back (100+ on a document); `q` narrows by internal name or Ukrainian "
-    "synonym; no match returns `available_names`."
+    "synonym; no match returns `available_names` as \"Name (Synonym)\". The user's wording may "
+    "be a form caption that differs from the synonym: on a miss pick the field by meaning from "
+    "those synonyms, then pass its Name."
 )
 _FILTER_CATALOG_DESC = (
     "Server-side catalog selection filtered and sorted by any fields; use it instead of "
@@ -674,7 +676,8 @@ TOOLS: dict[str, ToolSpec] = {
                                                 "attributes"},
              "q": {"type": "string",
                    "description": "Case-insensitive substring of a header attribute's name or "
-                                  "synonym"}},
+                                  "synonym (a form caption may differ; on a miss match by "
+                                  "meaning)"}},
             ["metadata", "type"],
         ),
         _describe_metadata,
