@@ -1603,11 +1603,11 @@ TOOLS: dict[str, ToolSpec] = {
 # confirm-before-change rule, appended here so no spec can miss it.
 _CONFIRM_CHANGE_EXEMPT = frozenset({"save_context"})
 _CONFIRM_CHANGE_UK = (" Змінює дані в базі: спершу скажи користувачу, що саме зміниться (об'єкт, "
-                      "поле, старе → нове значення), і викликай лише після його явного "
-                      "підтвердження цієї зміни.")
+                      "поле як «синонім (ім'я)», старе → нове значення), і викликай лише після "
+                      "його явного підтвердження цієї зміни.")
 _CONFIRM_CHANGE_EN = (" Changes data in the base: first tell the user exactly what will change "
-                      "(object, field, old → new value) and call this only after their explicit "
-                      "confirmation of that change.")
+                      "(object, field as «synonym (name)», old → new value) and call this only "
+                      "after their explicit confirmation of that change.")
 for _name, _spec in list(TOOLS.items()):
     if not _spec.read_only and _name not in _CONFIRM_CHANGE_EXEMPT:
         TOOLS[_name] = replace(
