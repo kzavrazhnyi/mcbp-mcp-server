@@ -60,11 +60,11 @@ async def test_gating_read_only_without_flag_all_with():
     async with Client(_mock_server(allow_write=True)) as client:
         with_flag = await client.list_tools()
     assert len(without.tools) == len(tool_specs(surface="mcp")) == 18
-    assert len(with_flag.tools) == len(tool_specs(surface="mcp", include_write=True)) == 33
+    assert len(with_flag.tools) == len(tool_specs(surface="mcp", include_write=True)) == 34
     assert "exchange_result" in {t.name for t in without.tools}
     added = {t.name for t in with_flag.tools} - {t.name for t in without.tools}
     assert added == {"write_object", "save_context", "patch_object", "set_function_status",
-                     "upsert_function", "upsert_idea", "upsert_function_task",
+                     "upsert_function", "upsert_idea", "upsert_task_status", "upsert_function_task",
                      "set_register_record", "upsert_project", "upsert_bug", "set_bug_status",
                      "exchange_enqueue", "exchange_run", "upsert_additional_attribute",
                      "set_additional_attribute_values"}

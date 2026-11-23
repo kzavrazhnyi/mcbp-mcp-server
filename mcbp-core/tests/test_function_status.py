@@ -139,3 +139,24 @@ async def test_executor_maps_arguments():
         {"function_id": FID, "version": "2.0", "status": "Done", "disable": False},
     )
     assert result["data"]["version"] == "2.0" and result["data"]["disable"] is False
+
+
+@respx.mock
+async def test_any_status_name_passes_through_to_1c():
+    """A status the base added to MCBP_TaskStatuses (not Waiting/Done) reaches 1C unchanged."""
+    body = {"data": {**BODY["data"], "status": "InProgress"}}
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json=body))
+    client = await _live()
+    result = await TOOLS["set_function_status"].executor(
+        client, {"function_id": FID, "version": "1", "status": "InProgress"})
+    assert json.loads(route.calls.last.request.content) == {"version": "1", "status": "InProgress"}
+    assert result["data"]["status"] == "InProgress"
+    await client.set_function_status(FID, version="1", status="Виконується")
+    assert json.loads(route.calls.last.request.content)["status"] == "Виконується"
+    await client.shutdown()
+
+
+def test_status_schema_has_no_enum():
+    status = TOOLS["set_function_status"].parameters["properties"]["status"]
+    assert "enum" not in status and status["type"] == "string"
+    assert "Waiting" in status["description"] and "Done" in status["description"]

@@ -63,7 +63,8 @@ server is the thin MCP adapter in front of it.
 | `patch_object` *(gated)* | Update header attributes and tabular sections (replace/append) natively; `id="new"` creates an own `MCBP_*` catalog item or document; `Posted` posts/unposts a document |
 | `set_register_record` *(gated)* | Upsert one information-register record natively (key = all dimensions + `Period`; no delete) |
 | `save_context` *(gated)* | Push a conversation turn upstream (skeleton) |
-| `set_function_status` *(gated)* | Set the support-tracker status of one MCBP function |
+| `set_function_status` *(gated)* | Set the support-tracker status of one MCBP function (any MCBP_TaskStatuses name or description) |
+| `upsert_task_status` *(gated)* | Create or update one MCBP_TaskStatuses item natively (a tracker status `set_function_status` then accepts) |
 | `upsert_function` *(gated)* | Create or update one MCBP_Functions item natively (no Plus conversion) |
 | `upsert_idea` *(gated)* | Create or update one MCBP_Ideas item natively; link ideas to a function via `upsert_function` `ideas` |
 | `upsert_project` *(gated)* | Create or update one project catalog item (a catalog type of `Project`, e.g. MCBP_Projects) natively |

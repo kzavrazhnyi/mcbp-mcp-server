@@ -1467,7 +1467,8 @@ class MCBPClient:
                                   date_execution: str | None = None,
                                   disable: bool | None = None) -> dict:
         """Upserts the support-tracker state of one MCBP_Functions item (UUID `function_id`).
-        `status` is a predefined MCBP_TaskStatuses name (Waiting / Done); `date_execution` is
+        `status` is an MCBP_TaskStatuses item name, passed through as is (Waiting, Done, or any
+        status the base adds; 1C answers BAD_PARAMETER for an unknown one); `date_execution` is
         YYYY-MM-DD (BAS keeps the date only), `""` clears it, None leaves it as stored; `disable`
         None leaves it as stored. Same body twice changes nothing. POST is not retried.
         {"data": {"function","description","version","status","date_execution","disable",
@@ -1558,6 +1559,27 @@ class MCBPClient:
             body["project"] = project or None
         params = {"id": idea_id} if idea_id is not None else None
         return await self._request("POST", "/ai/v1/ideas", params=params, json=body)
+
+    async def upsert_task_status(self, status_id: str | None = None, *,
+                                 description: str | None = None,
+                                 deletion_mark: bool | None = None) -> dict:
+        """Creates (no `status_id`) or updates one MCBP_TaskStatuses catalog item natively — no
+        MCBP Plus conversion. `description` is required on create; None leaves a field as
+        stored. A predefined item (Waiting / Done) keeps its name and cannot be marked for
+        deletion. The new item's Description is what set_function_status then accepts as
+        `status`. A repeated update with the same fields changes nothing; every create adds a
+        new item. POST is not retried.
+        {"data": {"id","name","description","deletion_mark","created","changed"}}."""
+        if status_id is not None and not status_id.strip():
+            raise ParameterError("status_id is blank - omit it to create a status, "
+                                 "or pass the item UUID to update one")
+        body: dict[str, Any] = {}
+        if description is not None:
+            body["description"] = description
+        if deletion_mark is not None:
+            body["deletion_mark"] = deletion_mark
+        params = {"id": status_id} if status_id is not None else None
+        return await self._request("POST", "/ai/v1/task-statuses", params=params, json=body)
 
     async def upsert_project(self, project_id: str | None = None, *,
                              type_: str | None = None,
@@ -2167,13 +2189,67 @@ def _mock_dashboard(user: str, method: str, kw: dict) -> dict:
 
 
 _MOCK_FUNCTION_STATUS: dict[str, dict] = {}
+# Predefined MCBP_TaskStatuses items of the mock base; user items live in _MOCK_TASK_STATUSES.
 _FUNCTION_STATUSES = ("Waiting", "Done")
+_MOCK_TASK_STATUSES: dict[str, dict] = {}
+_TASK_STATUS_FIELDS = ("description", "deletion_mark")
+_TASK_STATUS_DESCRIPTION_MAX = 25  # DescriptionLength of Catalog.MCBP_TaskStatuses in the base
 _FUNCTION_VERSION_MAX = 12
 _FUNCTION_STATUS_FIELDS = ("version", "status", "date_execution", "disable")
 
 
 def reset_mock_function_status() -> None:
     _MOCK_FUNCTION_STATUS.clear()
+    _MOCK_TASK_STATUSES.clear()
+
+
+def _mock_status_names() -> list[str]:
+    """Names set_function_status accepts: predefined names, then the Description of every
+    unmarked user item — as the 1C route looks them up."""
+    return list(_FUNCTION_STATUSES) + [row["description"] for row in _MOCK_TASK_STATUSES.values()
+                                       if not row["deletion_mark"]]
+
+
+def _mock_task_status_upsert(kw: dict) -> dict:
+    body = _mock_check_fields(kw.get("json"), _TASK_STATUS_FIELDS)
+    raw_id = (kw.get("params") or {}).get("id")
+    if raw_id is not None and not str(raw_id).strip():
+        raise ParameterError("id is blank - omit it to create a status, or pass the item UUID "
+                             "to update one")
+    is_create = raw_id is None
+    new: dict[str, Any] = {}
+    description = _mock_description(body, is_create, "a status", _TASK_STATUS_DESCRIPTION_MAX)
+    if description is not None:
+        new["description"] = description
+    _mock_deletion_mark(body, new)
+    if is_create:
+        status_id = str(uuid.uuid4())
+        old = None
+        row = {"description": "", "deletion_mark": False}
+    else:
+        try:
+            status_id = str(uuid.UUID(raw_id))
+        except ValueError:
+            raise ParameterError("id must be a MCBP_TaskStatuses item UUID") from None
+        old = _MOCK_TASK_STATUSES.get(status_id)
+        if old is None:
+            raise NotFoundError(f"Catalog MCBP_TaskStatuses {status_id} not found")
+        row = dict(old)
+    row.update(new)
+    if not row["deletion_mark"]:
+        # FunctionStatusSet finds a user status by Description, so two live items may not share one.
+        key = row["description"].lower()
+        clash = next((sid for sid, other in _MOCK_TASK_STATUSES.items()
+                      if sid != status_id and not other["deletion_mark"]
+                      and other["description"].lower() == key), None)
+        if clash is not None or key in (s.lower() for s in _FUNCTION_STATUSES):
+            raise ConflictError(f"Catalog MCBP_TaskStatuses already has a status "
+                                f"'{row['description']}': {clash or 'predefined'}")
+    changed = is_create or row != old
+    _MOCK_TASK_STATUSES[status_id] = row
+    return {"data": {"id": status_id, "name": None, "description": row["description"],
+                     "deletion_mark": row["deletion_mark"], "created": is_create,
+                     "changed": changed}}
 
 
 def _mock_function_status(path: str, kw: dict) -> dict:
@@ -2193,13 +2269,12 @@ def _mock_function_status(path: str, kw: dict) -> dict:
     if len(version) > _FUNCTION_VERSION_MAX:
         raise ParameterError(f"version is longer than {_FUNCTION_VERSION_MAX} characters")
     raw_status = body.get("status")
-    status = next((s for s in _FUNCTION_STATUSES
+    names = _mock_status_names()
+    status = next((s for s in names
                    if isinstance(raw_status, str) and s.lower() == raw_status.strip().lower()),
                   None)
     if status is None:
-        raise ParameterError(
-            f"Unknown status '{raw_status}' - one of: " + ", ".join(_FUNCTION_STATUSES)
-        )
+        raise ParameterError(f"Unknown status '{raw_status}' - one of: " + ", ".join(names))
     try:
         function_id = str(uuid.UUID(function_id))
     except ValueError:
@@ -3073,6 +3148,8 @@ def _mock_response(method: str, path: str, kw: dict) -> Any:
         return _mock_function_status(path, kw)
     if method == "POST" and path.rstrip("/") == "ai/v1/projects":
         return _mock_project_upsert(kw)
+    if method == "POST" and path.rstrip("/") == "ai/v1/task-statuses":
+        return _mock_task_status_upsert(kw)
     if method == "POST" and path.startswith("ai/v1/bugs/") and path.endswith("/status"):
         return _mock_bug_status(path, kw)
     if method == "POST" and path.startswith("ai/v1/exchange/"):

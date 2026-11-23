@@ -380,6 +380,13 @@ async def _upsert_idea(c: MCBPClient, a: dict) -> Any:
     )
 
 
+async def _upsert_task_status(c: MCBPClient, a: dict) -> Any:
+    return await c.upsert_task_status(
+        a.get("status_id"), description=a.get("description"),
+        deletion_mark=a.get("deletion_mark"),
+    )
+
+
 async def _upsert_project(c: MCBPClient, a: dict) -> Any:
     return await c.upsert_project(
         a.get("project_id"), type_=a.get("type"), description=a.get("description"),
@@ -957,8 +964,10 @@ TOOLS: dict[str, ToolSpec] = {
         "Встановлює стан функції MCBP у трекері підтримки: один запис регістра "
         "MCBP_StatusFunctions на елемент довідника MCBP_Functions (лише останній стан, без "
         "історії). `function_id` — UUID елемента MCBP_Functions (Ref.Data зі search_catalog). "
-        "`status` — Waiting або Done; інше — BAD_PARAMETER з переліком допустимих. `version` — "
-        "до 12 символів. `date_execution` — YYYY-MM-DD (зберігається лише дата), \"\" очищає; "
+        "`status` — ім'я або найменування елемента довідника MCBP_TaskStatuses (напр. Waiting, "
+        "Done або стан, доданий через upsert_task_status); невідома назва — BAD_PARAMETER з "
+        "переліком допустимих. "
+        "`version` — до 12 символів. `date_execution` — YYYY-MM-DD (зберігається лише дата), \"\" очищає; "
         "не передане поле `date_execution`/`disable` лишається як було. Той самий виклик удруге "
         "нічого не змінює (`changed: false`). Невідома функція — NOT_FOUND; база без цього "
         "регістра — NOT_CONFIGURED; немає права зміни регістра — FORBIDDEN.",
@@ -966,7 +975,9 @@ TOOLS: dict[str, ToolSpec] = {
             {"function_id": {"type": "string",
                              "description": "UUID елемента довідника MCBP_Functions"},
              "version": {"type": "string", "description": "Версія, до 12 символів"},
-             "status": {"type": "string", "enum": ["Waiting", "Done"]},
+             "status": {"type": "string",
+                        "description": "Назва елемента MCBP_TaskStatuses, напр. Waiting, "
+                                       "Done; приймається будь-який стан бази"},
              "date_execution": {"type": "string",
                                 "description": "YYYY-MM-DD; \"\" очищає дату"},
              "disable": {"type": "boolean"}},
@@ -979,9 +990,11 @@ TOOLS: dict[str, ToolSpec] = {
             "Sets the support-tracker state of one MCBP function: the single "
             "MCBP_StatusFunctions register record of an MCBP_Functions catalog item (latest "
             "state only, no history). `function_id` is the MCBP_Functions item UUID (Ref.Data "
-            "from search_catalog). `status` is Waiting or Done; anything else is BAD_PARAMETER "
-            "listing the allowed names. `version` is at most 12 characters. `date_execution` is "
-            "YYYY-MM-DD (only the date is stored), \"\" clears it; an omitted "
+            "from search_catalog). `status` is the name or description of an MCBP_TaskStatuses "
+            "item (e.g. Waiting, Done, or a status added via upsert_task_status); an unknown "
+            "one is "
+            "BAD_PARAMETER from 1C listing the allowed names. `version` is at most 12 characters. "
+            "`date_execution` is YYYY-MM-DD (only the date is stored), \"\" clears it; an omitted "
             "`date_execution`/`disable` keeps its stored value. Repeating the same call changes "
             "nothing (`changed: false`). Unknown function -> NOT_FOUND; a base without this "
             "register -> NOT_CONFIGURED; no update right on the register -> FORBIDDEN."
@@ -1094,6 +1107,43 @@ TOOLS: dict[str, ToolSpec] = {
             "Repeating the same change changes nothing (`changed: false`). Unknown `idea_id` -> "
             "NOT_FOUND; a base without the catalog -> NOT_CONFIGURED; no insert/update right -> "
             "FORBIDDEN."
+        )),
+    "upsert_task_status": ToolSpec(
+        "upsert_task_status",
+        "Створює або змінює елемент довідника MCBP_TaskStatuses (стан функції в трекері) "
+        "напряму, БЕЗ правил конвертації MCBP Plus (write_object для цього довідника не "
+        "працює). Без `status_id` — новий стан (`description` обов'язковий; кожен виклик "
+        "створює ще один); з `status_id` (UUID) — зміна лише переданих полів. "
+        "`deletion_mark: true` ставить позначку вилучення. Найменування нового стану потім "
+        "приймає set_function_status як `status`. Передвизначені стани (Waiting, Done) "
+        "лишають своє ім'я і не позначаються на вилучення. Два непозначені стани з однаковим "
+        "найменуванням — CONFLICT. Та сама зміна удруге нічого не "
+        "змінює (`changed: false`). Невідомий `status_id` — NOT_FOUND; база без довідника — "
+        "NOT_CONFIGURED; немає права додавання/зміни — FORBIDDEN.",
+        _params(
+            {"status_id": {"type": "string",
+                           "description": "UUID елемента MCBP_TaskStatuses; без нього — "
+                                          "створення"},
+             "description": {"type": "string",
+                             "description": "Найменування стану, напр. Виконується; "
+                                            "обов'язкове при створенні"},
+             "deletion_mark": {"type": "boolean"}},
+            [],
+        ),
+        _upsert_task_status,
+        read_only=False,
+        surfaces=frozenset({"mcp"}),
+        description_en=(
+            "Creates or updates one MCBP_TaskStatuses catalog item (a support-tracker function "
+            "state) natively, WITHOUT MCBP Plus conversion rules (write_object does not work for "
+            "this catalog). No `status_id` -> a new status (`description` required; every such "
+            "call creates another one); with `status_id` (UUID) -> only the passed fields "
+            "change. `deletion_mark: true` sets the deletion mark. set_function_status then "
+            "accepts the new item's description as `status`. Predefined statuses (Waiting, "
+            "Done) keep their name and cannot be marked for deletion. Two unmarked statuses with "
+            "the same description -> CONFLICT. Repeating the same change "
+            "changes nothing (`changed: false`). Unknown `status_id` -> NOT_FOUND; a base "
+            "without the catalog -> NOT_CONFIGURED; no insert/update right -> FORBIDDEN."
         )),
     "upsert_project": ToolSpec(
         "upsert_project",
