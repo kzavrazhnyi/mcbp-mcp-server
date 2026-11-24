@@ -60,6 +60,31 @@ async def test_errors_are_typed_and_post_is_not_retried():
     await client.shutdown()
 
 
+@respx.mock
+async def test_duplicate_description_409_conflict_is_typed():
+    route = respx.post(URL).mock(return_value=httpx.Response(
+        409, json={"error": {"code": "CONFLICT",
+                             "message": f"Catalog MCBP_TaskStatuses already has a status "
+                                        f"'Виконується': {SID}"}}))
+    client = await _live()
+    with pytest.raises(ConflictError, match=SID):
+        await client.upsert_task_status(description="Виконується")
+    assert route.call_count == 1
+    await client.shutdown()
+
+
+@respx.mock
+async def test_marking_predefined_400_bad_parameter_is_typed():
+    route = respx.post(f"{URL}?id={SID}").mock(return_value=httpx.Response(
+        400, json={"error": {"code": "BAD_PARAMETER",
+                             "message": "A predefined status cannot be marked for deletion"}}))
+    client = await _live()
+    with pytest.raises(ParameterError, match="predefined"):
+        await client.upsert_task_status(SID, deletion_mark=True)
+    assert route.call_count == 1
+    await client.shutdown()
+
+
 async def test_blank_id_is_rejected_before_the_wire():
     with pytest.raises(ParameterError):
         await _mock_client().upsert_task_status("  ", description="x")
