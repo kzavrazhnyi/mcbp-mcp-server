@@ -70,6 +70,47 @@ def test_same_name_different_uuid_do_not_collide():
     assert again["data"][0]["Ref"]["Presentation"] == p1
 
 
+def test_renamed_reference_keeps_pseudonym_and_rehydrates_latest_name():
+    # A write renames the object mid-chat; a fresh read carries the new Presentation.
+    masker = Masker(type_classifier=_classifier)
+    old, new = "ТЕСТ-П1 серія до 31.12.2026", "ТЕСТ-П1 серія до 31.01.2027"
+    first = masker.mask({"data": [{"Ref": _ref("Контрагенты", "uuid-r", old)}]})
+    pseudo = first["data"][0]["Ref"]["Presentation"]
+    assert masker.rehydrate_text(f"об'єкт {pseudo}") == f"об'єкт {old}"  # index built on A
+
+    second = masker.mask({"data": [{"Ref": _ref("Контрагенты", "uuid-r", new)}]})
+    renamed = second["data"][0]["Ref"]["Presentation"]
+    # Same placeholder for the same type+UUID; the new name is masked, never shown clear.
+    assert renamed == pseudo
+    assert new not in str(second)
+    # The earlier placeholder (already in the chat) now rehydrates to the current name.
+    assert masker.rehydrate_text(f"об'єкт {pseudo}") == f"об'єкт {new}"
+    code = pseudo.rpartition("·")[2]
+    assert masker.rehydrate_text(f"код {code}") == f"код {new}"
+    # Arguments still resolve to the UUID; both names still mask to the placeholder.
+    assert masker.unmask_arguments({"id": pseudo}) == {"id": "uuid-r"}
+    assert masker.mask_text(f"помилка: {new}") == f"помилка: {pseudo}"
+    assert masker.mask_text(f"помилка: {old}") == f"помилка: {pseudo}"
+
+
+def test_renamed_reference_stream_rehydration_uses_latest_name():
+    masker = Masker(type_classifier=_classifier)
+    masker.mask({"data": [{"Ref": _ref("Контрагенты", "uuid-r", "Стара назва")}]})
+    second = masker.mask({"data": [{"Ref": _ref("Контрагенты", "uuid-r", "Нова назва")}]})
+    pseudo = second["data"][0]["Ref"]["Presentation"]
+    sr = masker.stream_rehydrator()
+    assert sr.feed(f"це {pseudo}.") + sr.flush() == "це Нова назва."
+
+
+def test_renamed_reference_of_open_type_passes_new_name_clear():
+    masker = Masker(type_classifier=_classifier)
+    first = masker.mask({"data": [{"Ref": _ref("Номенклатура", "nom-r", "Стілець старий")}]})
+    second = masker.mask({"data": [{"Ref": _ref("Номенклатура", "nom-r", "Стілець новий")}]})
+    assert first["data"][0]["Ref"]["Presentation"] == "Стілець старий"
+    assert second["data"][0]["Ref"]["Presentation"] == "Стілець новий"
+    assert masker.rehydrate_text("Стілець новий") == "Стілець новий"
+
+
 def test_unknown_type_fallback_masks_conservatively():
     masker = Masker(type_classifier=_classifier)
     payload = {"data": [{"Ref": _ref("НевідомийТип", "uuid-9", "Щось Незрозуміле")}]}

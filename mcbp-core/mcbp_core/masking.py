@@ -1526,8 +1526,13 @@ class Masker:
                 pseudo = self._new_pseudonym(metadata_name, key)
                 self._cache[cache_key] = pseudo
                 self._pseudo_to_uuid[pseudo] = str(uuid)
+            # The pseudonym stays tied to type+UUID; the text it stands for is the LATEST
+            # presentation seen, so an object renamed mid-chat rehydrates under its new name.
+            # The old name keeps mapping to the pseudonym in `_original_to_pseudo` (mask_text).
+            if self._pseudo_to_original.get(pseudo) != presentation:
                 self._pseudo_to_original[pseudo] = presentation
                 self._original_to_pseudo[presentation] = pseudo
+                self._rehydrate_size = -1  # a changed value does not change the map's size
         else:
             # No UUID to key on (or no metadata at all -> unknown type, mask conservatively):
             # pseudonymize the Presentation TEXT itself, so `unmask_arguments` maps the
